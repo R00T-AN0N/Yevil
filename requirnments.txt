@@ -1,0 +1,8 @@
+# Yevil - WiFi Security Testing Tool
+# Python Package Dependencies
+
+scapy>=2.4.0
+wifi>=0.3.8
+colorama>=0.4.4
+tqdm>=4.64.0
+netifaces>=0.11.0
