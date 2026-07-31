@@ -10,7 +10,12 @@ import sys
 import subprocess
 import importlib
 import time
+import re
+import json
+import threading
 import shutil
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
 # ============================================
@@ -23,20 +28,17 @@ def setup_virtual_environment():
     """Create and setup virtual environment for Yevil"""
     print("\n[+] Setting up virtual environment for Yevil...")
     
-    # Check if venv already exists
     if os.path.exists(VENV_DIR):
         print("[+] Virtual environment already exists")
         return True
     
-    # Create virtual environment
     try:
         print("[+] Creating virtual environment...")
         subprocess.run([sys.executable, '-m', 'venv', VENV_DIR], check=True)
         print("[+] Virtual environment created successfully!")
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"[!] Failed to create virtual environment: {e}")
-        print("[!] Installing python3-venv...")
+    except subprocess.CalledProcessError:
+        print("[!] Failed to create virtual environment. Installing python3-venv...")
         try:
             subprocess.run(['sudo', 'apt-get', 'install', '-y', 'python3-venv'], check=True)
             subprocess.run([sys.executable, '-m', 'venv', VENV_DIR], check=True)
@@ -76,7 +78,6 @@ def install_dependencies_venv():
     
     packages = ['scapy', 'wifi', 'colorama', 'tqdm', 'netifaces']
     
-    # Upgrade pip first
     pip_path = get_venv_pip()
     try:
         subprocess.run([pip_path, 'install', '--upgrade', 'pip'], check=True, capture_output=True)
@@ -94,38 +95,8 @@ def install_dependencies_venv():
     print("[+] All dependencies installed successfully!")
     return True
 
-def run_with_venv():
-    """Restart script with virtual environment Python"""
-    venv_python = get_venv_python()
-    
-    # Check if we're already running in venv
-    if sys.executable.startswith(VENV_DIR):
-        return True
-    
-    # Check if venv exists
-    if not os.path.exists(venv_python):
-        print("[!] Virtual environment not found. Setting up...")
-        if not setup_virtual_environment():
-            return False
-        if not install_dependencies_venv():
-            return False
-    
-    # Check if packages are installed in venv
-    try:
-        subprocess.run([venv_python, '-c', 'import scapy'], check=True, capture_output=True)
-        print("[+] Dependencies found in virtual environment")
-        return True
-    except:
-        print("[!] Installing dependencies in virtual environment...")
-        if not install_dependencies_venv():
-            return False
-    
-    # Restart with venv Python
-    print("[+] Restarting with virtual environment...")
-    os.execv(venv_python, [venv_python] + sys.argv)
-
-def check_dependencies_system():
-    """Check system dependencies (non-Python)"""
+def check_system_deps():
+    """Check system dependencies"""
     print("\n[+] Checking system dependencies...")
     
     system_packages = ['aircrack-ng', 'iw', 'wireless-tools']
@@ -156,28 +127,26 @@ def check_dependencies_system():
 # MAIN EXECUTION WITH VENV HANDLING
 # ============================================
 
-# Check if we need to setup venv
 if not sys.executable.startswith(VENV_DIR):
     print("\n[+] Checking Python environment...")
     
-    # Check if running as root
     if os.geteuid() != 0:
         print("[!] This tool requires root privileges!")
         print("[!] Please run with: sudo python3 yevil.py")
         sys.exit(1)
     
-    # Setup virtual environment
-    if not setup_virtual_environment():
-        print("[!] Failed to setup virtual environment")
-        print("[!] Please install python3-venv: sudo apt-get install python3-venv")
+    if not check_system_deps():
+        print("[!] Please install system dependencies and try again.")
         sys.exit(1)
     
-    # Install dependencies in venv
+    if not setup_virtual_environment():
+        print("[!] Failed to setup virtual environment")
+        sys.exit(1)
+    
     if not install_dependencies_venv():
         print("[!] Failed to install dependencies")
         sys.exit(1)
     
-    # Restart with venv
     venv_python = get_venv_python()
     if os.path.exists(venv_python):
         print("[+] Starting Yevil in virtual environment...")
@@ -207,11 +176,6 @@ except ImportError as e:
 # IMPORTS
 # ============================================
 
-import re
-import json
-import threading
-from datetime import datetime
-from typing import List, Dict, Optional, Tuple
 import scapy.all as scapy
 from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeReq
 from scapy.layers.eap import EAPOL
@@ -287,36 +251,6 @@ class YevilTool:
             Colors.print_colored("[!] This tool requires root privileges!", 'red', True)
             Colors.print_colored("[!] Please run with: sudo python3 yevil.py", 'yellow')
             sys.exit(1)
-    
-    def check_system_deps(self):
-        """Check system dependencies"""
-        Colors.print_colored("\n[+] Checking system dependencies...", 'cyan', True)
-        
-        tools = ['airodump-ng', 'aireplay-ng', 'aircrack-ng', 'iw']
-        missing = []
-        
-        for tool in tools:
-            try:
-                subprocess.run(['which', tool], check=True, capture_output=True)
-                Colors.print_colored(f"   ✓ {tool} installed", 'green')
-            except:
-                missing.append(tool)
-                Colors.print_colored(f"   ✗ {tool} missing", 'red')
-        
-        if missing:
-            Colors.print_colored(f"\n[!] Missing tools: {', '.join(missing)}", 'yellow')
-            Colors.print_colored("[!] Installing missing tools...", 'yellow')
-            try:
-                subprocess.run(['sudo', 'apt-get', 'update', '-y'], check=True)
-                subprocess.run(['sudo', 'apt-get', 'install', '-y', 'aircrack-ng', 'iw', 'wireless-tools'], check=True)
-                Colors.print_colored("[+] Tools installed successfully!", 'green')
-                return True
-            except:
-                Colors.print_colored("[!] Failed to install tools", 'red')
-                Colors.print_colored("[!] Run: sudo apt-get install aircrack-ng iw wireless-tools", 'yellow')
-                return False
-        
-        return True
     
     def detect_adapters(self) -> List[str]:
         """Detect all available wireless adapters"""
@@ -791,4 +725,87 @@ class YevilTool:
             print("8.  About Yevil")
             print("9.  Exit")
             
-            choice = input("\n[?] Select option: "
+            choice = input("\n[?] Select option: ")
+            
+            if choice == '1':
+                adapters = self.detect_adapters()
+                if adapters:
+                    Colors.print_colored(f"\n[+] Available adapters:", 'cyan')
+                    for i, adapter in enumerate(adapters, 1):
+                        Colors.print_colored(f"   {i}. {adapter}", 'white')
+                    
+                    try:
+                        choice_adapt = input("\n[?] Select adapter number: ")
+                        idx = int(choice_adapt) - 1
+                        if 0 <= idx < len(adapters):
+                            if self.set_monitor_mode(adapters[idx]):
+                                Colors.print_colored("[+] Adapter ready!", 'green')
+                            else:
+                                Colors.print_colored("[-] Failed to set monitor mode!", 'red')
+                        else:
+                            Colors.print_colored("[-] Invalid selection!", 'red')
+                    except ValueError:
+                        Colors.print_colored("[-] Please enter a valid number!", 'red')
+                else:
+                    Colors.print_colored("\n[!] No adapters found. Attach wireless adapter.", 'yellow')
+                    
+            elif choice == '2':
+                if self.adapter:
+                    self.scan_networks()
+                else:
+                    Colors.print_colored("[-] No adapter in monitor mode!", 'red')
+                    
+            elif choice == '3':
+                if self.networks:
+                    self.select_target()
+                else:
+                    Colors.print_colored("[-] No networks available! Please scan first.", 'red')
+                    
+            elif choice == '4':
+                if self.target_bssid and self.target_channel:
+                    self.capture_packets(self.target_bssid, self.target_channel)
+                else:
+                    Colors.print_colored("[-] No target selected!", 'red')
+                    
+            elif choice == '5':
+                if self.target_bssid and self.target_channel:
+                    self.run_deauth_background(self.target_bssid, self.target_channel)
+                else:
+                    Colors.print_colored("[-] No target selected!", 'red')
+                    
+            elif choice == '6':
+                self.show_status()
+                
+            elif choice == '7':
+                self.view_captured_packets()
+                
+            elif choice == '8':
+                self.show_about()
+                
+            elif choice == '9':
+                self.running = False
+                self.cleanup()
+                Colors.print_colored("\n[+] Goodbye! Stay ethical!", 'cyan', True)
+                break
+                
+            else:
+                Colors.print_colored("[-] Invalid option!", 'red')
+
+# ============================================
+# MAIN FUNCTION
+# ============================================
+
+def main():
+    """Main entry point"""
+    tool = YevilTool()
+    tool.print_banner()
+    tool.check_root()
+    
+    # Auto-detect adapter
+    adapters = tool.detect_adapters()
+    if adapters:
+        Colors.print_colored(f"\n[+] Found adapter: {adapters[0]}", 'green')
+        if tool.set_monitor_mode(adapters[0]):
+            Colors.print_colored("[+] Auto-setup complete!", 'green')
+        else:
+            Colors.print_colored("[!] Manual
