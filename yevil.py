@@ -99,7 +99,7 @@ def check_system_deps():
     """Check system dependencies"""
     print("\n[+] Checking system dependencies...")
     
-    system_packages = ['aircrack-ng', 'iw', 'wireless-tools']
+    system_packages = ['aircrack-ng', 'iw', 'wireless-tools', 'airmon-ng']
     missing = []
     
     for pkg in system_packages:
@@ -233,6 +233,7 @@ class YevilTool:
     
     def __init__(self):
         self.adapter = None
+        self.original_adapter = None
         self.available_adapters = []
         self.external_adapters = []
         self.networks = []
@@ -254,198 +255,164 @@ class YevilTool:
             Colors.print_colored("[!] Please run with: sudo python3 yevil.py", 'yellow')
             sys.exit(1)
     
-    def get_usb_wifi_adapters(self) -> dict:
-        """
-        Get USB WiFi adapters from lsusb and map them to interface names
-        Returns a dict with interface names as keys and adapter info as values
-        """
-        usb_adapters = {}
-        
+    def get_all_adapters(self) -> List[str]:
+        """Get all wireless adapters"""
+        adapters = []
         try:
-            # Get USB devices
-            result = subprocess.run(['lsusb'], capture_output=True, text=True)
-            lsusb_output = result.stdout
-            
-            # Common USB WiFi chipsets to look for
-            wifi_chipsets = [
-                'RTL8812', 'RTL8188', 'RTL8192', 'RTL8723', 'RTL8821',
-                'AR9271', 'AR7010', 'AR9287', 'AR9285',
-                'MT7601', 'MT7610', 'MT7612', 'MT7662',
-                'Ralink', 'Realtek', 'Atheros', 'MediaTek',
-                '802.11n', '802.11ac', 'Wireless', 'WiFi',
-                'WLAN', 'Adapter', 'NIC'
-            ]
-            
-            # Find USB WiFi devices
-            usb_wifi_devices = []
-            lines = lsusb_output.split('\n')
-            
-            for line in lines:
-                line_lower = line.lower()
-                for chipset in wifi_chipsets:
-                    if chipset.lower() in line_lower:
-                        usb_wifi_devices.append(line)
-                        break
-            
-            if usb_wifi_devices:
-                Colors.print_colored(f"\n   🔍 Found {len(usb_wifi_devices)} USB WiFi device(s) in lsusb:", 'cyan')
-                for dev in usb_wifi_devices:
-                    Colors.print_colored(f"      📌 {dev.strip()}", 'white')
-            
-            # Now find the interface names for these USB adapters
-            # Get all wireless interfaces
-            result = subprocess.run(['iwconfig'], capture_output=True, text=True)
-            iwconfig_output = result.stdout
-            
-            # Get interface info
-            result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
-            ip_output = result.stdout
-            
-            # Try to match USB devices to interfaces
-            interface_info = {}
-            
-            for line in iwconfig_output.split('\n'):
-                if 'IEEE 802.11' in line:
-                    adapter = line.split()[0]
-                    
-                    # Get USB info for this interface
-                    try:
-                        # Check if interface is USB
-                        usb_check = subprocess.run(
-                            ['readlink', '-f', f'/sys/class/net/{adapter}/device'],
-                            capture_output=True, text=True
-                        )
-                        device_path = usb_check.stdout.strip()
-                        
-                        if 'usb' in device_path.lower():
-                            # It's a USB adapter
-                            usb_adapters[adapter] = {
-                                'type': 'USB',
-                                'path': device_path,
-                                'info': 'USB WiFi Adapter'
-                            }
-                            Colors.print_colored(f"      ✅ {adapter} is USB device", 'green')
-                        else:
-                            # Might be internal
-                            Colors.print_colored(f"      ❌ {adapter} is NOT USB", 'red')
-                            
-                    except:
-                        # Can't determine, check if it's in lsusb via chipset
-                        # Get driver info
-                        try:
-                            result = subprocess.run(['ethtool', '-i', adapter], 
-                                                  capture_output=True, text=True)
-                            if 'driver' in result.stdout:
-                                driver = result.stdout.split('driver:')[1].split()[0] if 'driver:' in result.stdout else ''
-                                
-                                # Check if driver is commonly used with USB adapters
-                                usb_drivers = ['rtl', 'mt76', 'ath9k_htc', 'rtl88', 'rtl818']
-                                if any(drv in driver.lower() for drv in usb_drivers):
-                                    usb_adapters[adapter] = {
-                                        'type': 'USB',
-                                        'driver': driver,
-                                        'info': f'USB Adapter ({driver})'
-                                    }
-                                    Colors.print_colored(f"      ✅ {adapter} appears to be USB (driver: {driver})", 'green')
-                                else:
-                                    Colors.print_colored(f"      ⚠️ {adapter} may be internal (driver: {driver})", 'yellow')
-                        except:
-                            pass
-            
-        except Exception as e:
-            Colors.print_colored(f"   [-] Error detecting USB adapters: {e}", 'red')
-        
-        return usb_adapters
-    
-    def detect_adapters(self) -> List[str]:
-        """
-        Detect external USB wireless adapters using iwconfig and lsusb
-        """
-        Colors.print_colored("\n[+] Detecting external USB wireless adapters...", 'cyan', True)
-        Colors.print_colored("[+] Using iwconfig + lsusb matching...\n", 'cyan')
-        
-        all_adapters = []
-        external = []
-        
-        try:
-            # Get all wireless adapters from iwconfig
+            # Method 1: iwconfig
             result = subprocess.run(['iwconfig'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
                     adapter = line.split()[0]
-                    if adapter not in all_adapters:
-                        all_adapters.append(adapter)
+                    if adapter not in adapters:
+                        adapters.append(adapter)
             
-            if not all_adapters:
-                Colors.print_colored("\n[!] No wireless adapters found!", 'red')
-                return []
+            # Method 2: ip link
+            result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if 'wlan' in line.lower() or 'wlp' in line.lower():
+                    match = re.search(r':\s*(\w+)', line)
+                    if match:
+                        adapter = match.group(1)
+                        if adapter not in adapters:
+                            adapters.append(adapter)
             
-            Colors.print_colored(f"[+] Found {len(all_adapters)} wireless adapter(s) in iwconfig:", 'cyan')
+            # Method 3: /sys/class/net/
+            if os.path.exists('/sys/class/net/'):
+                for device in os.listdir('/sys/class/net/'):
+                    if device.startswith('wlan') or device.startswith('wlp'):
+                        if device not in adapters:
+                            adapters.append(device)
+        except:
+            pass
+        
+        return adapters
+    
+    def detect_external_adapters(self) -> List[str]:
+        """Detect external USB wireless adapters"""
+        Colors.print_colored("\n[+] Detecting external USB wireless adapters...", 'cyan', True)
+        
+        all_adapters = self.get_all_adapters()
+        external = []
+        
+        if not all_adapters:
+            Colors.print_colored("\n[!] No wireless adapters found!", 'red')
+            return []
+        
+        Colors.print_colored(f"[+] Found {len(all_adapters)} wireless adapter(s)", 'cyan')
+        
+        for adapter in all_adapters:
+            print(f"\n   Checking: {adapter}")
             
-            # Get USB adapters
-            usb_adapters = self.get_usb_wifi_adapters()
+            is_usb = False
+            reason = ""
             
-            # Check each adapter
-            for adapter in all_adapters:
-                print(f"\n   ┌─ Checking: {adapter}")
-                print(f"   │")
-                
-                # Check if adapter is in USB list
-                if adapter in usb_adapters:
-                    Colors.print_colored(f"   └─ ✅ {adapter} is EXTERNAL (USB)", 'green')
-                    external.append(adapter)
-                else:
-                    # Try to check via driver
-                    try:
-                        result = subprocess.run(['ethtool', '-i', adapter], 
-                                              capture_output=True, text=True)
-                        if 'driver' in result.stdout:
-                            driver = result.stdout.split('driver:')[1].split()[0] if 'driver:' in result.stdout else ''
-                            usb_drivers = ['rtl', 'mt76', 'ath9k_htc', 'rtl88', 'rtl818']
-                            if any(drv in driver.lower() for drv in usb_drivers):
-                                Colors.print_colored(f"   └─ ✅ {adapter} is EXTERNAL (USB driver: {driver})", 'green')
-                                external.append(adapter)
-                            else:
-                                Colors.print_colored(f"   └─ ❌ {adapter} is INTERNAL (driver: {driver})", 'red')
-                        else:
-                            Colors.print_colored(f"   └─ ❌ {adapter} is INTERNAL (no USB info)", 'red')
-                    except:
-                        Colors.print_colored(f"   └─ ❌ {adapter} is INTERNAL (unknown)", 'red')
+            # Method 1: Check USB subsystem
+            try:
+                result = subprocess.run(
+                    ['readlink', '-f', f'/sys/class/net/{adapter}/device'],
+                    capture_output=True, text=True
+                )
+                if 'usb' in result.stdout.lower():
+                    is_usb = True
+                    reason = "USB device path"
+                    Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (USB)", 'green')
+            except:
+                pass
             
-        except Exception as e:
-            Colors.print_colored(f"[-] Error detecting adapters: {e}", 'red')
+            # Method 2: Check driver
+            if not is_usb:
+                try:
+                    result = subprocess.run(['ethtool', '-i', adapter], 
+                                          capture_output=True, text=True)
+                    if 'driver' in result.stdout:
+                        driver = result.stdout.split('driver:')[1].split()[0] if 'driver:' in result.stdout else ''
+                        
+                        # Check if driver is USB
+                        usb_drivers = ['rtl', 'mt76', 'ath9k_htc', 'rtl88', 'rtl818', '8812', '88XX']
+                        if any(drv in driver.lower() for drv in usb_drivers):
+                            is_usb = True
+                            reason = f"USB driver: {driver}"
+                            Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (driver: {driver})", 'green')
+                except:
+                    pass
+            
+            # Method 3: Check with lsusb
+            if not is_usb:
+                try:
+                    result = subprocess.run(['lsusb'], capture_output=True, text=True)
+                    usb_chipsets = ['Realtek', 'RTL', 'Atheros', 'MediaTek', 'Ralink', 'TP-Link']
+                    for chipset in usb_chipsets:
+                        if chipset.lower() in result.stdout.lower():
+                            is_usb = True
+                            reason = f"USB chipset: {chipset}"
+                            Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (USB chipset detected)", 'green')
+                            break
+                except:
+                    pass
+            
+            # Method 4: Check via udev
+            if not is_usb:
+                try:
+                    result = subprocess.run(['udevadm', 'info', '--query=property', f'--name={adapter}'], 
+                                          capture_output=True, text=True)
+                    if 'ID_BUS=usb' in result.stdout:
+                        is_usb = True
+                        reason = "USB bus detected"
+                        Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (USB bus)", 'green')
+                except:
+                    pass
+            
+            # Method 5: Check if TP-Link
+            if not is_usb:
+                try:
+                    result = subprocess.run(['lsusb'], capture_output=True, text=True)
+                    if 'TP-Link' in result.stdout or 'TL-WN' in result.stdout:
+                        is_usb = True
+                        reason = "TP-Link adapter detected"
+                        Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (TP-Link)", 'green')
+                except:
+                    pass
+            
+            if is_usb:
+                external.append(adapter)
+            else:
+                Colors.print_colored(f"   ❌ {adapter} is INTERNAL (built-in)", 'red')
         
         self.available_adapters = all_adapters
         self.external_adapters = external
         
-        print("\n" + "="*60)
-        
         if external:
             Colors.print_colored(f"\n[+] Found {len(external)} external adapter(s): {', '.join(external)}", 'green', True)
-            return external
         else:
-            Colors.print_colored("\n" + "="*60, 'yellow', True)
-            Colors.print_colored("⚠️  NO EXTERNAL USB WIRELESS ADAPTER DETECTED!", 'yellow', True)
-            Colors.print_colored("="*60, 'yellow')
-            Colors.print_colored("\n[!] Built-in/internal WiFi cards are NOT supported!", 'red', True)
-            Colors.print_colored("\n📌 RECOMMENDED EXTERNAL ADAPTERS:", 'cyan', True)
-            Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU)", 'white')
-            Colors.print_colored("   • Alfa AWUS036NHA (AR9271)", 'white')
-            Colors.print_colored("   • TP-Link TL-WN722N (AR9271)", 'white')
-            Colors.print_colored("   • Alfa AWUS036H (RTL8187L)", 'white')
-            Colors.print_colored("\n💡 Plug in a compatible USB WiFi adapter and try again.", 'yellow')
-            return []
+            Colors.print_colored("\n[!] No external USB adapters detected!", 'yellow', True)
+            Colors.print_colored("[!] Please connect a USB WiFi adapter", 'yellow')
+            Colors.print_colored("\n📌 Supported adapters:", 'cyan')
+            Colors.print_colored("   • TP-Link TL-WN722N", 'white')
+            Colors.print_colored("   • Alfa AWUS036ACH", 'white')
+            Colors.print_colored("   • Alfa AWUS036NHA", 'white')
+            Colors.print_colored("   • Any USB WiFi adapter with monitor mode support", 'white')
+        
+        return external
     
     def set_monitor_mode(self, adapter: str) -> bool:
         """Set adapter to monitor mode automatically"""
         Colors.print_colored(f"\n[+] Setting {adapter} to monitor mode...", 'cyan', True)
+        self.original_adapter = adapter
         
         try:
+            # Kill processes that might interfere
+            Colors.print_colored("[+] Killing interfering processes...", 'blue')
+            subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
+                         capture_output=True, text=True)
+            
+            # Try airmon-ng first
             try:
-                subprocess.run(['which', 'airmon-ng'], check=True, capture_output=True)
+                Colors.print_colored("[+] Using airmon-ng...", 'blue')
                 result = subprocess.run(['sudo', 'airmon-ng', 'start', adapter], 
                                       capture_output=True, text=True)
                 
+                # Look for the monitor interface name
                 for line in result.stdout.split('\n'):
                     if 'mon' in line and adapter in line:
                         match = re.search(r'(\w+mon\d*)', line)
@@ -453,25 +420,26 @@ class YevilTool:
                             self.adapter = match.group(1)
                             Colors.print_colored(f"[+] Monitor mode enabled on {self.adapter}", 'green')
                             return True
-                        
-            except subprocess.CalledProcessError:
-                commands = [
-                    f'sudo ip link set {adapter} down',
-                    f'sudo iw dev {adapter} set type monitor',
-                    f'sudo ip link set {adapter} up'
-                ]
-                for cmd in commands:
-                    subprocess.run(cmd.split(), check=True, capture_output=True)
-                
-                self.adapter = adapter
-                Colors.print_colored(f"[+] Monitor mode enabled on {self.adapter}", 'green')
-                return True
+            except:
+                pass
+            
+            # Manual method if airmon-ng fails
+            Colors.print_colored("[+] Manual monitor mode setup...", 'blue')
+            commands = [
+                f'sudo ip link set {adapter} down',
+                f'sudo iw dev {adapter} set type monitor',
+                f'sudo ip link set {adapter} up'
+            ]
+            for cmd in commands:
+                subprocess.run(cmd.split(), check=True, capture_output=True)
+            
+            self.adapter = adapter
+            Colors.print_colored(f"[+] Monitor mode enabled on {self.adapter}", 'green')
+            return True
                 
         except Exception as e:
             Colors.print_colored(f"[-] Failed to set monitor mode: {e}", 'red')
             return False
-        
-        return False
     
     def draw_wifi_animation(self):
         """Draw WiFi scanning animation"""
@@ -641,6 +609,7 @@ class YevilTool:
         
         if not self.adapter:
             Colors.print_colored("[-] No adapter in monitor mode!", 'red')
+            Colors.print_colored("[!] Please setup adapter first (Option 1)", 'yellow')
             return []
         
         self.draw_wifi_animation()
@@ -763,6 +732,11 @@ class YevilTool:
             Colors.print_colored("[-] No target selected!", 'red')
             return
         
+        if not self.adapter:
+            Colors.print_colored("[-] No adapter in monitor mode!", 'red')
+            Colors.print_colored("[!] Please setup adapter first (Option 1)", 'yellow')
+            return
+        
         Colors.print_colored(f"\n[?] Target AP: {bssid} (Channel: {channel})", 'yellow')
         
         capture_handshake = input("\n[?] Capture handshake? (y/n): ").lower().strip() == 'y'
@@ -876,6 +850,11 @@ class YevilTool:
         Colors.print_colored("🔄 BACKGROUND DEAUTH ATTACK", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
         
+        if not self.adapter:
+            Colors.print_colored("[-] No adapter in monitor mode!", 'red')
+            Colors.print_colored("[!] Please setup adapter first (Option 1)", 'yellow')
+            return
+        
         try:
             packet_count = 100
             
@@ -918,7 +897,8 @@ class YevilTool:
         Colors.print_colored("\n📊 YEVIL - CURRENT STATUS", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
         
-        Colors.print_colored(f"Adapter: {self.adapter or 'Not set'}", 'white')
+        Colors.print_colored(f"Original Adapter: {self.original_adapter or 'Not set'}", 'white')
+        Colors.print_colored(f"Monitor Adapter: {self.adapter or 'Not set'}", 'white')
         Colors.print_colored(f"Target AP: {self.target_bssid or 'Not selected'}", 'white')
         Colors.print_colored(f"Channel: {self.target_channel or 'Not selected'}", 'white')
         Colors.print_colored(f"Networks found: {len(self.networks)}", 'white')
@@ -964,17 +944,18 @@ class YevilTool:
         Colors.print_colored("WiFi Security Testing Tool for Educational Purposes", 'white')
         
         Colors.print_colored("\n📖 What Yevil Does:", 'yellow', True)
-        Colors.print_colored("   1. Detects external USB WiFi adapters using iwconfig + lsusb", 'white')
+        Colors.print_colored("   1. Detects external USB WiFi adapters", 'white')
         Colors.print_colored("   2. Shows WiFi radar with distance visualization", 'white')
         Colors.print_colored("   3. Scans networks with airodump-ng --band abg", 'white')
         Colors.print_colored("   4. Captures packets and WPA handshakes", 'white')
         Colors.print_colored("   5. Runs deauth attacks to disconnect clients", 'white')
         
-        Colors.print_colored("\n🔍 Detection Method:", 'cyan', True)
-        Colors.print_colored("   • Checks iwconfig for wireless interfaces", 'white')
-        Colors.print_colored("   • Checks lsusb for USB WiFi devices", 'white')
-        Colors.print_colored("   • Matches USB devices to interface names", 'white')
-        Colors.print_colored("   • Identifies external vs internal adapters", 'white')
+        Colors.print_colored("\n🔧 How to use:", 'cyan', True)
+        Colors.print_colored("   1. Connect USB WiFi adapter", 'white')
+        Colors.print_colored("   2. Select Option 1 to detect and setup", 'white')
+        Colors.print_colored("   3. Select Option 2 to scan networks", 'white')
+        Colors.print_colored("   4. Select Option 3 to choose target", 'white')
+        Colors.print_colored("   5. Select Option 4 to capture handshake", 'white')
         
         Colors.print_colored("\n⚠️  Legal Disclaimer:", 'red', True)
         Colors.print_colored("   This tool is for EDUCATIONAL PURPOSES ONLY!", 'red')
@@ -983,13 +964,16 @@ class YevilTool:
         input("\nPress Enter to continue...")
     
     def cleanup(self):
-        """Cleanup temporary files"""
+        """Cleanup temporary files and reset adapter"""
         try:
             subprocess.run(['rm', '-f', '/tmp/scan-01.csv', '/tmp/yevil_capture_*.cap'], 
                          capture_output=True)
             if self.adapter and 'mon' in self.adapter:
+                Colors.print_colored("[+] Cleaning up monitor interface...", 'blue')
                 subprocess.run(['sudo', 'airmon-ng', 'stop', self.adapter], 
                              capture_output=True)
+                if self.original_adapter:
+                    Colors.print_colored(f"[+] Reset to managed mode: {self.original_adapter}", 'green')
         except:
             pass
     
@@ -1004,6 +988,7 @@ class YevilTool:
                 Colors.print_colored(f"📡 Adapter: {self.adapter} (Monitor Mode)", 'green')
             else:
                 Colors.print_colored("📡 No external adapter in monitor mode!", 'red')
+                Colors.print_colored("[!] Select Option 1 to setup your adapter", 'yellow')
             
             Colors.print_colored("\n📋 YEVIL MENU", 'yellow', True)
             print("1.  🔍 Detect & Setup External Adapter")
@@ -1019,7 +1004,7 @@ class YevilTool:
             choice = input("\n[?] Select option: ")
             
             if choice == '1':
-                adapters = self.detect_adapters()
+                adapters = self.detect_external_adapters()
                 if adapters:
                     Colors.print_colored(f"\n[+] Available external adapters:", 'cyan')
                     for i, adapter in enumerate(adapters, 1):
@@ -1040,6 +1025,8 @@ class YevilTool:
                 else:
                     Colors.print_colored("\n[!] No external adapters found!", 'yellow')
                     Colors.print_colored("[!] Connect a USB WiFi adapter and try again.", 'yellow')
+                    Colors.print_colored("\n📌 After connecting, wait 5 seconds and try again.", 'cyan')
+                    time.sleep(2)
                     
             elif choice == '2':
                 if self.adapter:
@@ -1100,20 +1087,22 @@ def main():
     
     # Auto-detect external adapter
     Colors.print_colored("\n[+] Attempting to auto-detect external wireless adapter...", 'cyan')
-    adapters = tool.detect_adapters()
+    adapters = tool.detect_external_adapters()
     if adapters:
         Colors.print_colored(f"\n[+] Found external adapter: {adapters[0]}", 'green')
         if tool.set_monitor_mode(adapters[0]):
             Colors.print_colored("[+] Auto-setup complete!", 'green')
         else:
             Colors.print_colored("[!] Manual setup may be required", 'yellow')
+            Colors.print_colored("[!] Try: sudo airmon-ng start " + adapters[0], 'yellow')
     else:
         Colors.print_colored("\n[!] No external adapter detected.", 'yellow')
         Colors.print_colored("[!] Please connect a compatible USB WiFi adapter.", 'yellow')
         Colors.print_colored("\n📌 Recommended adapters:", 'cyan')
+        Colors.print_colored("   • TP-Link TL-WN722N (AR9271)", 'white')
         Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU)", 'white')
         Colors.print_colored("   • Alfa AWUS036NHA (AR9271)", 'white')
-        Colors.print_colored("   • TP-Link TL-WN722N (AR9271)", 'white')
+        Colors.print_colored("   • Any USB WiFi adapter with monitor mode support", 'white')
     
     # Start main menu
     tool.main_menu()
