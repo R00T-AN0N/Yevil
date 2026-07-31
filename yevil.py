@@ -254,46 +254,154 @@ class YevilTool:
             Colors.print_colored("[!] Please run with: sudo python3 yevil.py", 'yellow')
             sys.exit(1)
     
-    def is_internal_adapter(self, adapter_name: str) -> bool:
-        """Check if adapter is internal (built-in)"""
-        # Common internal adapter patterns
-        internal_patterns = [
-            'wlan0', 'wlp0s', 'wlo1', 'wlp1s0', 'wlan1', 
-            'wlx', 'wlp2s0', 'enp', 'eth0', 'lo'
-        ]
+    def is_external_adapter(self, adapter_name: str) -> bool:
+        """
+        Check if adapter is external (USB) using multiple methods
+        Returns True if external, False if internal
+        """
+        print(f"\n   🔍 Checking adapter: {adapter_name}")
         
-        # Check if adapter name matches internal patterns
-        for pattern in internal_patterns:
-            if adapter_name.startswith(pattern) and len(adapter_name) <= 6:
-                return True
-        
-        # Check if it's a USB adapter (usually has longer names)
-        if adapter_name.startswith('wlan') and len(adapter_name) > 6:
-            return False
-        
-        # Check via USB bus
+        # Method 1: Check via USB subsystem
         try:
-            # Check if adapter is connected via USB
+            # Check if adapter exists in USB devices
+            result = subprocess.run(['find', '/sys/class/net/', adapter_name, '-name', 'device'], 
+                                  capture_output=True, text=True)
+            if result.stdout.strip():
+                device_path = result.stdout.strip()
+                # Check if it's a USB device
+                if 'usb' in device_path.lower():
+                    print(f"      ✅ Found USB device at: {device_path}")
+                    return True
+        except:
+            pass
+        
+        # Method 2: Check using lsusb with adapter name
+        try:
             result = subprocess.run(['lsusb'], capture_output=True, text=True)
             # Look for common USB WiFi chipset names
-            usb_chipsets = ['RTL8812', 'RTL8188', 'AR9271', 'MT7601', 'Ralink', 'Realtek']
+            usb_chipsets = [
+                'RTL8812', 'RTL8188', 'RTL8192', 'RTL8723',
+                'AR9271', 'AR7010', 'AR9287',
+                'MT7601', 'MT7610', 'MT7612',
+                'Ralink', 'Realtek', 'Atheros', 'MediaTek',
+                '802.11n', '802.11ac', 'Wireless', 'WiFi'
+            ]
+            
             for chipset in usb_chipsets:
-                if chipset in result.stdout:
+                if chipset.lower() in result.stdout.lower():
+                    print(f"      ✅ USB chipset detected: {chipset}")
+                    return True
+        except:
+            pass
+        
+        # Method 3: Check PCI vs USB via lspci
+        try:
+            # Check if adapter appears in PCI list
+            result = subprocess.run(['lspci'], capture_output=True, text=True)
+            pci_wifi_keywords = ['Network controller', 'Wireless', 'WiFi', '802.11']
+            
+            for keyword in pci_wifi_keywords:
+                if keyword in result.stdout and adapter_name in result.stdout:
+                    print(f"      ❌ Found in PCI: {keyword}")
                     return False
         except:
             pass
         
-        return True
+        # Method 4: Check driver info
+        try:
+            # Get driver info
+            result = subprocess.run(['ethtool', '-i', adapter_name], 
+                                  capture_output=True, text=True)
+            if 'driver' in result.stdout:
+                driver = result.stdout.split('driver:')[1].split()[0] if 'driver:' in result.stdout else ''
+                # Check if driver is typical internal or external
+                internal_drivers = ['iwlwifi', 'ath9k', 'ath10k', 'b43', 'brcmfmac']
+                external_drivers = ['rtl88', 'rtl88', 'rtl818', 'mt76', 'ath9k_htc']
+                
+                if any(drv in driver.lower() for drv in internal_drivers):
+                    print(f"      ❌ Internal driver: {driver}")
+                    return False
+                elif any(drv in driver.lower() for drv in external_drivers):
+                    print(f"      ✅ External driver: {driver}")
+                    return True
+        except:
+            pass
+        
+        # Method 5: Check physical location
+        try:
+            # Check if adapter is on USB bus
+            result = subprocess.run(['readlink', '-f', f'/sys/class/net/{adapter_name}/device'], 
+                                  capture_output=True, text=True)
+            if result.stdout.strip():
+                device_path = result.stdout.strip()
+                if 'usb' in device_path.lower():
+                    print(f"      ✅ USB device path: {device_path}")
+                    return True
+                elif 'pci' in device_path.lower():
+                    print(f"      ❌ PCI device path: {device_path}")
+                    return False
+        except:
+            pass
+        
+        # Method 6: Check if interface is removable
+        try:
+            # Check removable flag
+            result = subprocess.run(['cat', f'/sys/class/net/{adapter_name}/device/removable'], 
+                                  capture_output=True, text=True)
+            if result.stdout.strip() == '1':
+                print(f"      ✅ Removable device")
+                return True
+            elif result.stdout.strip() == '0':
+                print(f"      ❌ Non-removable device")
+                return False
+        except:
+            pass
+        
+        # Method 7: Check via udev
+        try:
+            result = subprocess.run(['udevadm', 'info', '--query=property', 
+                                   f'--name={adapter_name}'], 
+                                  capture_output=True, text=True)
+            if 'ID_BUS=usb' in result.stdout:
+                print(f"      ✅ USB bus detected")
+                return True
+            elif 'ID_BUS=pci' in result.stdout:
+                print(f"      ❌ PCI bus detected")
+                return False
+        except:
+            pass
+        
+        # Method 8: Check for monitor mode support (usually external supports better)
+        try:
+            result = subprocess.run(['iw', 'dev', adapter_name, 'info'], 
+                                  capture_output=True, text=True)
+            if 'wiphy' in result.stdout:
+                # Check if it supports monitor mode
+                result = subprocess.run(['iw', 'list'], capture_output=True, text=True)
+                # If interface supports monitor mode, likely external
+                return True
+        except:
+            pass
+        
+        # Default: If we can't determine, assume external for USB adapters
+        # Check if name suggests USB (has long identifier)
+        if len(adapter_name) > 5 and adapter_name.startswith('wl'):
+            print(f"      ⚠️  Could not determine, assuming external (long name)")
+            return True
+        
+        print(f"      ⚠️  Could not determine, marking as internal")
+        return False
     
     def detect_adapters(self) -> List[str]:
-        """Detect only external USB wireless adapters - Feature 1"""
+        """Detect only external USB wireless adapters"""
         Colors.print_colored("\n[+] Detecting external USB wireless adapters...", 'cyan', True)
+        Colors.print_colored("[+] Using multiple detection methods...\n", 'cyan')
         
         all_adapters = []
         external = []
         
         try:
-            # Check iwconfig
+            # Get all wireless adapters
             result = subprocess.run(['iwconfig'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
@@ -301,7 +409,7 @@ class YevilTool:
                     if adapter not in all_adapters:
                         all_adapters.append(adapter)
             
-            # Check ip link
+            # Also check ip link
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'wlan' in line.lower() or 'wlp' in line.lower():
@@ -311,20 +419,32 @@ class YevilTool:
                         if adapter not in all_adapters:
                             all_adapters.append(adapter)
             
-            # Check /sys/class/net/
+            # Also check /sys/class/net/
             if os.path.exists('/sys/class/net/'):
                 for device in os.listdir('/sys/class/net/'):
                     if device.startswith('wlan') or device.startswith('wlp'):
                         if device not in all_adapters:
                             all_adapters.append(device)
             
-            # Filter for external adapters only
+            if not all_adapters:
+                Colors.print_colored("\n[!] No wireless adapters found at all!", 'red')
+                return []
+            
+            Colors.print_colored(f"[+] Found {len(all_adapters)} total wireless adapter(s):", 'cyan')
+            
+            # Check each adapter
             for adapter in all_adapters:
-                if not self.is_internal_adapter(adapter):
+                print(f"\n   ┌─ Checking: {adapter}")
+                print(f"   │")
+                
+                # Check if external
+                is_external = self.is_external_adapter(adapter)
+                
+                if is_external:
                     external.append(adapter)
-                    Colors.print_colored(f"   [+] Found external adapter: {adapter}", 'green')
+                    Colors.print_colored(f"   └─ ✅ {adapter} is EXTERNAL (USB)", 'green')
                 else:
-                    Colors.print_colored(f"   [-] Ignoring internal adapter: {adapter}", 'red')
+                    Colors.print_colored(f"   └─ ❌ {adapter} is INTERNAL (built-in)", 'red')
             
         except Exception as e:
             Colors.print_colored(f"[-] Error detecting adapters: {e}", 'red')
@@ -332,30 +452,34 @@ class YevilTool:
         self.available_adapters = all_adapters
         self.external_adapters = external
         
+        print("\n" + "="*60)
+        
         if external:
-            Colors.print_colored(f"\n[+] Found {len(external)} external adapter(s): {', '.join(external)}", 'green')
+            Colors.print_colored(f"\n[+] Found {len(external)} external adapter(s): {', '.join(external)}", 'green', True)
             return external
         else:
             Colors.print_colored("\n" + "="*60, 'yellow', True)
-            Colors.print_colored("⚠️  NO EXTERNAL WIRELESS ADAPTER DETECTED!", 'yellow', True)
+            Colors.print_colored("⚠️  NO EXTERNAL USB WIRELESS ADAPTER DETECTED!", 'yellow', True)
             Colors.print_colored("="*60, 'yellow')
             Colors.print_colored("\n[!] Built-in/internal WiFi cards are NOT supported!", 'red', True)
-            Colors.print_colored("[!] Internal cards lack proper monitor mode support.", 'red')
+            Colors.print_colored("[!] They lack proper monitor mode and packet injection support.", 'red')
             Colors.print_colored("\n📌 RECOMMENDED EXTERNAL ADAPTERS:", 'cyan', True)
-            Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU)", 'white')
-            Colors.print_colored("   • Alfa AWUS036NHA (AR9271)", 'white')
-            Colors.print_colored("   • TP-Link TL-WN722N (AR9271)", 'white')
-            Colors.print_colored("   • Alfa AWUS036H (RTL8187L)", 'white')
+            Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU) - Best for Kali", 'white')
+            Colors.print_colored("   • Alfa AWUS036NHA (AR9271) - Excellent choice", 'white')
+            Colors.print_colored("   • TP-Link TL-WN722N (AR9271) - Budget friendly", 'white')
+            Colors.print_colored("   • Alfa AWUS036H (RTL8187L) - Classic choice", 'white')
+            Colors.print_colored("   • Panda Wireless PAU05 (RTL8812AU) - Good alternative", 'white')
             Colors.print_colored("\n💡 Plug in a compatible USB WiFi adapter and try again.", 'yellow')
             return []
     
     def set_monitor_mode(self, adapter: str) -> bool:
-        """Set adapter to monitor mode automatically - Feature 1"""
+        """Set adapter to monitor mode automatically"""
         Colors.print_colored(f"\n[+] Setting {adapter} to monitor mode...", 'cyan', True)
         
         # Verify it's an external adapter
-        if self.is_internal_adapter(adapter):
-            Colors.print_colored("[-] This is an internal adapter! External adapters only!", 'red')
+        if not self.is_external_adapter(adapter):
+            Colors.print_colored("[-] This appears to be an internal adapter!", 'red')
+            Colors.print_colored("[-] Only external USB adapters are supported!", 'red')
             return False
         
         try:
@@ -392,7 +516,7 @@ class YevilTool:
         return False
     
     def draw_wifi_animation(self):
-        """Draw WiFi scanning animation - Feature 2"""
+        """Draw WiFi scanning animation"""
         frames = [
             """
 \033[96m
@@ -475,7 +599,6 @@ class YevilTool:
                     
                 parts = line.strip().split(',')
                 if len(parts) >= 10 and parts[0] and parts[0] != 'BSSID':
-                    # Calculate signal strength and distance
                     power = int(parts[8].strip()) if parts[8].strip().lstrip('-').isdigit() else 0
                     distance = self.calculate_distance(power)
                     
@@ -491,7 +614,7 @@ class YevilTool:
                         'power': power,
                         'beacons': parts[9].strip(),
                         'ssid': parts[13].strip() if len(parts) > 13 else '<Hidden>',
-                        'distance': distance  # Estimated distance in meters
+                        'distance': distance
                     }
                     networks.append(network)
             
@@ -511,7 +634,7 @@ class YevilTool:
             return 0.0
     
     def draw_network_radar(self, networks: List[Dict]):
-        """Draw radar visualization showing networks by distance - Feature 2"""
+        """Draw radar visualization showing networks by distance"""
         if not networks:
             return
         
@@ -553,7 +676,7 @@ class YevilTool:
         print("    ╚═══════════════════════════════════════════════════╝")
     
     def scan_networks(self) -> List[Dict]:
-        """Scan networks using airodump-ng - Feature 2 & 3"""
+        """Scan networks using airodump-ng"""
         Colors.print_colored("\n" + "="*60, 'cyan', True)
         Colors.print_colored("📡 YEVIL SCANNING NETWORKS", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
@@ -595,7 +718,7 @@ class YevilTool:
             return []
     
     def display_networks(self, networks: List[Dict]):
-        """Display networks in formatted table - Feature 3"""
+        """Display networks in formatted table"""
         if not networks:
             Colors.print_colored("\n[-] No networks found!", 'red')
             return
@@ -631,7 +754,7 @@ class YevilTool:
         Colors.print_colored(f"Monitor Mode: {self.adapter}", 'green', True)
     
     def select_target(self) -> Tuple[str, str]:
-        """Select target network - Feature 4"""
+        """Select target network"""
         if not self.networks:
             Colors.print_colored("[-] No networks available. Please scan first.", 'red')
             return None, None
@@ -673,7 +796,7 @@ class YevilTool:
                 Colors.print_colored("[-] Please enter a valid number!", 'red')
     
     def capture_packets_and_handshake(self, bssid: str, channel: str):
-        """Capture packets and handshake - Feature 4 & 5"""
+        """Capture packets and handshake"""
         Colors.print_colored("\n" + "="*60, 'cyan', True)
         Colors.print_colored("📡 CAPTURING PACKETS & HANDSHAKE", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
@@ -773,7 +896,7 @@ class YevilTool:
             capture_process.terminate()
     
     def show_packet_stats(self, pcap_file: str):
-        """Show packet statistics - Feature 4"""
+        """Show packet statistics"""
         Colors.print_colored("\n📊 PACKET CAPTURE STATISTICS", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
         
@@ -790,7 +913,7 @@ class YevilTool:
         Colors.print_colored(f"   Handshake Captured: {'✅ Yes' if self.handshake_captured else '❌ No'}", 'yellow')
     
     def run_background_deauth(self, bssid: str, channel: str):
-        """Run deauth in background - Feature 5"""
+        """Run deauth in background"""
         Colors.print_colored("\n" + "="*60, 'cyan', True)
         Colors.print_colored("🔄 BACKGROUND DEAUTH ATTACK", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
@@ -892,11 +1015,20 @@ class YevilTool:
         Colors.print_colored("\n⚠️  EXTERNAL ADAPTER REQUIRED:", 'red', True)
         Colors.print_colored("   Built-in/internal WiFi cards are NOT supported!", 'red')
         Colors.print_colored("   You MUST use an external USB WiFi adapter.", 'red')
+        
+        Colors.print_colored("\n📌 How Detection Works:", 'cyan', True)
+        Colors.print_colored("   • Checks USB subsystem", 'white')
+        Colors.print_colored("   • Checks PCI vs USB bus", 'white')
+        Colors.print_colored("   • Checks driver information", 'white')
+        Colors.print_colored("   • Checks physical location", 'white')
+        Colors.print_colored("   • Checks removable flag", 'white')
+        Colors.print_colored("   • Checks udev information", 'white')
+        
         Colors.print_colored("\n📌 Recommended External Adapters:", 'cyan', True)
-        Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU)", 'white')
-        Colors.print_colored("   • Alfa AWUS036NHA (AR9271)", 'white')
-        Colors.print_colored("   • TP-Link TL-WN722N (AR9271)", 'white')
-        Colors.print_colored("   • Alfa AWUS036H (RTL8187L)", 'white')
+        Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU) - Best for Kali", 'white')
+        Colors.print_colored("   • Alfa AWUS036NHA (AR9271) - Excellent choice", 'white')
+        Colors.print_colored("   • TP-Link TL-WN722N (AR9271) - Budget friendly", 'white')
+        Colors.print_colored("   • Alfa AWUS036H (RTL8187L) - Classic choice", 'white')
         
         Colors.print_colored("\n⚠️  Legal Disclaimer:", 'red', True)
         Colors.print_colored("   This tool is for EDUCATIONAL PURPOSES ONLY!", 'red')
@@ -1033,9 +1165,9 @@ def main():
         Colors.print_colored("\n[!] No external adapter detected.", 'yellow')
         Colors.print_colored("[!] Please connect a compatible USB WiFi adapter.", 'yellow')
         Colors.print_colored("\n📌 Recommended adapters:", 'cyan')
-        Colors.print_colored("   • Alfa AWUS036ACH", 'white')
-        Colors.print_colored("   • Alfa AWUS036NHA", 'white')
-        Colors.print_colored("   • TP-Link TL-WN722N", 'white')
+        Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU)", 'white')
+        Colors.print_colored("   • Alfa AWUS036NHA (AR9271)", 'white')
+        Colors.print_colored("   • TP-Link TL-WN722N (AR9271)", 'white')
     
     # Start main menu
     tool.main_menu()
