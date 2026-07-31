@@ -280,7 +280,7 @@ class YevilTool:
             # Method 3: /sys/class/net/
             if os.path.exists('/sys/class/net/'):
                 for device in os.listdir('/sys/class/net/'):
-                    if device.startswith('wlan') or device.startswith('wlp'):
+                    if device.startswith('wlan') or device.startswith('wlp') or 'mon' in device:
                         if device not in adapters:
                             adapters.append(device)
         except:
@@ -307,7 +307,15 @@ class YevilTool:
             is_usb = False
             reason = ""
             
-            # Method 1: Check USB subsystem
+            # Method 1: Check if already in monitor mode
+            if 'mon' in adapter:
+                is_usb = True
+                reason = "Monitor mode interface"
+                Colors.print_colored(f"   ✅ {adapter} is MONITOR mode interface", 'green')
+                external.append(adapter)
+                continue
+            
+            # Method 2: Check USB subsystem
             try:
                 result = subprocess.run(
                     ['readlink', '-f', f'/sys/class/net/{adapter}/device'],
@@ -320,7 +328,7 @@ class YevilTool:
             except:
                 pass
             
-            # Method 2: Check driver
+            # Method 3: Check driver
             if not is_usb:
                 try:
                     result = subprocess.run(['ethtool', '-i', adapter], 
@@ -329,7 +337,7 @@ class YevilTool:
                         driver = result.stdout.split('driver:')[1].split()[0] if 'driver:' in result.stdout else ''
                         
                         # Check if driver is USB
-                        usb_drivers = ['rtl', 'mt76', 'ath9k_htc', 'rtl88', 'rtl818', '8812', '88XX']
+                        usb_drivers = ['rtl', 'mt76', 'ath9k_htc', 'rtl88', 'rtl818', '8812', '88XX', 'ath', 'ar']
                         if any(drv in driver.lower() for drv in usb_drivers):
                             is_usb = True
                             reason = f"USB driver: {driver}"
@@ -337,7 +345,7 @@ class YevilTool:
                 except:
                     pass
             
-            # Method 3: Check with lsusb
+            # Method 4: Check with lsusb
             if not is_usb:
                 try:
                     result = subprocess.run(['lsusb'], capture_output=True, text=True)
@@ -351,7 +359,7 @@ class YevilTool:
                 except:
                     pass
             
-            # Method 4: Check via udev
+            # Method 5: Check via udev
             if not is_usb:
                 try:
                     result = subprocess.run(['udevadm', 'info', '--query=property', f'--name={adapter}'], 
@@ -363,7 +371,7 @@ class YevilTool:
                 except:
                     pass
             
-            # Method 5: Check if TP-Link
+            # Method 6: Check if TP-Link
             if not is_usb:
                 try:
                     result = subprocess.run(['lsusb'], capture_output=True, text=True)
@@ -405,12 +413,14 @@ class YevilTool:
             Colors.print_colored("[+] Killing interfering processes...", 'blue')
             subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
                          capture_output=True, text=True)
+            time.sleep(1)
             
             # Try airmon-ng first
             try:
                 Colors.print_colored("[+] Using airmon-ng...", 'blue')
                 result = subprocess.run(['sudo', 'airmon-ng', 'start', adapter], 
                                       capture_output=True, text=True)
+                print(result.stdout)  # Debug output
                 
                 # Look for the monitor interface name
                 for line in result.stdout.split('\n'):
@@ -420,8 +430,15 @@ class YevilTool:
                             self.adapter = match.group(1)
                             Colors.print_colored(f"[+] Monitor mode enabled on {self.adapter}", 'green')
                             return True
-            except:
-                pass
+            except Exception as e:
+                Colors.print_colored(f"   airmon-ng failed: {e}", 'yellow')
+            
+            # Check if monitor interface already exists
+            monitor_interfaces = [dev for dev in self.get_all_adapters() if 'mon' in dev]
+            if monitor_interfaces:
+                self.adapter = monitor_interfaces[0]
+                Colors.print_colored(f"[+] Found existing monitor interface: {self.adapter}", 'green')
+                return True
             
             # Manual method if airmon-ng fails
             Colors.print_colored("[+] Manual monitor mode setup...", 'blue')
@@ -602,7 +619,7 @@ class YevilTool:
         print("    ╚═══════════════════════════════════════════════════╝")
     
     def scan_networks(self) -> List[Dict]:
-        """Scan networks using airodump-ng"""
+        """Scan networks using airodump-ng - Fixed version"""
         Colors.print_colored("\n" + "="*60, 'cyan', True)
         Colors.print_colored("📡 YEVIL SCANNING NETWORKS", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
@@ -612,32 +629,66 @@ class YevilTool:
             Colors.print_colored("[!] Please setup adapter first (Option 1)", 'yellow')
             return []
         
+        # Check if adapter is actually in monitor mode
+        try:
+            result = subprocess.run(['iwconfig', self.adapter], capture_output=True, text=True)
+            if 'Monitor' not in result.stdout and 'mon' not in self.adapter:
+                Colors.print_colored("[-] Adapter is not in monitor mode!", 'red')
+                Colors.print_colored("[!] Please setup monitor mode first (Option 1)", 'yellow')
+                return []
+        except:
+            pass
+        
         self.draw_wifi_animation()
         
-        Colors.print_colored(f"\n[+] Running: airodump-ng {self.adapter} --band abg", 'blue')
+        # Verify the adapter is working
+        Colors.print_colored(f"\n[+] Using adapter: {self.adapter}", 'green')
+        Colors.print_colored(f"[+] Running: airodump-ng {self.adapter} --band abg", 'blue')
         Colors.print_colored("[+] Scanning all networks in range...", 'yellow')
+        Colors.print_colored("[+] This will take 15-20 seconds...", 'yellow')
         
         try:
+            # Clear previous scan results
+            subprocess.run(['rm', '-f', '/tmp/scan-01.csv', '/tmp/scan-01.cap'], capture_output=True)
+            
+            # Start airodump-ng
             process = subprocess.Popen(
                 f'sudo airodump-ng {self.adapter} --band abg --write /tmp/scan --output-format csv --write-interval 1'.split(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
             
+            # Show progress with countdown
             for i in range(15, 0, -1):
                 Colors.print_colored(f"   ⏳ Scanning... {i} seconds remaining", 'yellow', True)
                 time.sleep(1)
             
+            # Terminate process
             process.terminate()
             time.sleep(2)
             
+            # Check for results
             if os.path.exists('/tmp/scan-01.csv'):
                 self.networks = self.parse_airodump_csv('/tmp/scan-01.csv')
-                self.draw_network_radar(self.networks)
-                self.display_networks(self.networks)
+                
+                if self.networks:
+                    Colors.print_colored(f"\n[+] Found {len(self.networks)} networks!", 'green', True)
+                    self.draw_network_radar(self.networks)
+                    self.display_networks(self.networks)
+                else:
+                    Colors.print_colored("\n[!] No networks found in range!", 'yellow')
+                    Colors.print_colored("[!] Possible reasons:", 'yellow')
+                    Colors.print_colored("   1. No WiFi networks in range", 'white')
+                    Colors.print_colored("   2. Adapter not in monitor mode properly", 'white')
+                    Colors.print_colored("   3. Adapter not detecting signals", 'white')
+                    Colors.print_colored("\n[+] Try moving closer to a WiFi router", 'yellow')
+                    Colors.print_colored("[+] Try different channels", 'yellow')
+                    Colors.print_colored("[+] Try restarting the adapter", 'yellow')
+                
                 return self.networks
             else:
                 Colors.print_colored("[-] No scan results found!", 'red')
+                Colors.print_colored("[!] Try running: sudo airodump-ng " + self.adapter, 'yellow')
                 return []
                 
         except Exception as e:
@@ -950,12 +1001,12 @@ class YevilTool:
         Colors.print_colored("   4. Captures packets and WPA handshakes", 'white')
         Colors.print_colored("   5. Runs deauth attacks to disconnect clients", 'white')
         
-        Colors.print_colored("\n🔧 How to use:", 'cyan', True)
-        Colors.print_colored("   1. Connect USB WiFi adapter", 'white')
-        Colors.print_colored("   2. Select Option 1 to detect and setup", 'white')
-        Colors.print_colored("   3. Select Option 2 to scan networks", 'white')
-        Colors.print_colored("   4. Select Option 3 to choose target", 'white')
-        Colors.print_colored("   5. Select Option 4 to capture handshake", 'white')
+        Colors.print_colored("\n🔧 Troubleshooting:", 'cyan', True)
+        Colors.print_colored("   If no networks found:", 'white')
+        Colors.print_colored("   1. Make sure adapter is in monitor mode", 'white')
+        Colors.print_colored("   2. Check if adapter is working: iwconfig", 'white')
+        Colors.print_colored("   3. Try: sudo airodump-ng " + (self.adapter or "wlan0mon"), 'white')
+        Colors.print_colored("   4. Move closer to WiFi router", 'white')
         
         Colors.print_colored("\n⚠️  Legal Disclaimer:", 'red', True)
         Colors.print_colored("   This tool is for EDUCATIONAL PURPOSES ONLY!", 'red')
