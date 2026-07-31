@@ -808,4 +808,6 @@ def main():
         if tool.set_monitor_mode(adapters[0]):
             Colors.print_colored("[+] Auto-setup complete!", 'green')
         else:
-            Colors.print_colored("[!] Manual
+            Colors.print_colored("[!] Manual setup may be required", 'yellow')
+    
+    # Start main menu
