@@ -61,6 +61,7 @@ def cleanup_monitor_mode():
     print("[+] Cleaning up monitor mode...")
     print("="*60)
     
+    # Kill interfering processes
     try:
         print("[+] Killing interfering processes...")
         subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
@@ -69,6 +70,7 @@ def cleanup_monitor_mode():
     except:
         pass
     
+    # Stop monitor interface if it exists
     if MONITOR_INTERFACE:
         try:
             print(f"[+] Stopping monitor interface: {MONITOR_INTERFACE}")
@@ -78,6 +80,7 @@ def cleanup_monitor_mode():
         except:
             pass
     
+    # Reset original interface
     if ORIGINAL_INTERFACE:
         try:
             print(f"[+] Resetting {ORIGINAL_INTERFACE} to managed mode...")
@@ -92,6 +95,7 @@ def cleanup_monitor_mode():
         except:
             pass
     
+    # Restart NetworkManager
     try:
         print("[+] Restarting NetworkManager...")
         subprocess.run(['sudo', 'systemctl', 'restart', 'NetworkManager'], 
@@ -100,6 +104,7 @@ def cleanup_monitor_mode():
     except:
         pass
     
+    # Kill remaining processes
     try:
         subprocess.run(['sudo', 'pkill', '-f', 'airodump-ng'], capture_output=True, check=False)
         subprocess.run(['sudo', 'pkill', '-f', 'aireplay-ng'], capture_output=True, check=False)
@@ -165,32 +170,35 @@ class AdapterHandler:
         adapters = []
         
         try:
+            # Get all wireless interfaces from iwconfig
             result = subprocess.run(['iwconfig'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
                     adapter = line.split()[0]
-                    if adapter not in adapters and 'mon' not in adapter:
+                    if adapter not in adapters:
                         adapters.append(adapter)
             
+            # Get all wlan interfaces from ip link
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
-                if 'wlan' in line.lower() or 'wlp' in line.lower():
+                if 'wlan' in line.lower() or 'wlp' in line.lower() or 'mon' in line.lower():
                     match = re.search(r':\s*(\w+)', line)
                     if match:
                         adapter = match.group(1)
-                        if adapter not in adapters and 'mon' not in adapter:
+                        if adapter not in adapters:
                             adapters.append(adapter)
             
+            # Check /sys/class/net/
             if os.path.exists('/sys/class/net/'):
                 for device in os.listdir('/sys/class/net/'):
-                    if (device.startswith('wlan') or device.startswith('wlp')) and 'mon' not in device:
+                    if device.startswith('wlan') or device.startswith('wlp') or 'mon' in device:
                         if device not in adapters:
                             adapters.append(device)
         
         except Exception as e:
             print(f"[-] Error detecting adapters: {e}")
         
-        self.adapters = list(set(adapters))
+        self.adapters = adapters
         
         if adapters:
             print(f"[+] Found {len(adapters)} adapter(s)")
@@ -272,56 +280,92 @@ class AdapterHandler:
         return info
     
     def set_monitor_mode(self, adapter: str) -> bool:
-        """Set adapter to monitor mode with TX power 30"""
+        """Set adapter to monitor mode using airmon-ng"""
         global MONITOR_INTERFACE, ORIGINAL_INTERFACE
         
-        print(f"\n[+] Setting {adapter} to monitor mode with TX Power 30...")
+        print(f"\n[+] Setting {adapter} to monitor mode...")
         
         ORIGINAL_INTERFACE = adapter
         
         try:
+            # Kill interfering processes
             print("[+] Killing interfering processes...")
             subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
                          capture_output=True, text=True)
             time.sleep(1)
             
-            try:
-                print("[+] Using airmon-ng...")
-                result = subprocess.run(['sudo', 'airmon-ng', 'start', adapter], 
-                                      capture_output=True, text=True)
+            # Use airmon-ng to start monitor mode
+            print(f"[+] Running: sudo airmon-ng start {adapter}")
+            result = subprocess.run(['sudo', 'airmon-ng', 'start', adapter], 
+                                  capture_output=True, text=True)
+            
+            # Print the output for debugging
+            print(result.stdout)
+            
+            # Find the monitor interface name
+            monitor_found = False
+            for line in result.stdout.split('\n'):
+                # Look for lines like: "PHY	Interface	Driver		Chipset"
+                # or "wlan1mon" in the output
+                if 'mon' in line and adapter in line:
+                    match = re.search(r'(\w+mon\d*)', line)
+                    if match:
+                        MONITOR_INTERFACE = match.group(1)
+                        self.monitor_interface = MONITOR_INTERFACE
+                        print(f"[+] Monitor interface created: {MONITOR_INTERFACE}")
+                        monitor_found = True
+                        break
                 
-                for line in result.stdout.split('\n'):
-                    if 'mon' in line and adapter in line:
-                        match = re.search(r'(\w+mon\d*)', line)
-                        if match:
-                            MONITOR_INTERFACE = match.group(1)
-                            self.monitor_interface = MONITOR_INTERFACE
-                            print(f"[+] Monitor mode enabled on {MONITOR_INTERFACE}")
-                            return True
-            except Exception as e:
-                print(f"   airmon-ng failed: {e}")
+                # Also check for existing monitor interface
+                if 'mon' in line and 'IEEE 802.11' in line:
+                    parts = line.split()
+                    if parts and 'mon' in parts[0]:
+                        MONITOR_INTERFACE = parts[0]
+                        self.monitor_interface = MONITOR_INTERFACE
+                        print(f"[+] Found existing monitor interface: {MONITOR_INTERFACE}")
+                        monitor_found = True
+                        break
             
-            print("[+] Using manual monitor mode setup...")
+            # If no monitor interface found, check if adapter itself is in monitor mode
+            if not monitor_found:
+                # Check if the original adapter is now in monitor mode
+                check_result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
+                if 'Mode:Monitor' in check_result.stdout:
+                    MONITOR_INTERFACE = adapter
+                    self.monitor_interface = MONITOR_INTERFACE
+                    print(f"[+] {adapter} is now in monitor mode")
+                    monitor_found = True
             
-            commands = [
-                f'sudo ip link set {adapter} down',
-                f'sudo iw dev {adapter} set type monitor',
-                f'sudo ip link set {adapter} up'
-            ]
-            for cmd in commands:
-                subprocess.run(cmd.split(), check=True, capture_output=True)
+            if not monitor_found:
+                print("[!] Could not find monitor interface. Trying manual setup...")
+                
+                # Manual method
+                commands = [
+                    f'sudo ip link set {adapter} down',
+                    f'sudo iw dev {adapter} set type monitor',
+                    f'sudo ip link set {adapter} up'
+                ]
+                for cmd in commands:
+                    subprocess.run(cmd.split(), check=True, capture_output=True)
+                
+                MONITOR_INTERFACE = adapter
+                self.monitor_interface = MONITOR_INTERFACE
+                print(f"[+] Monitor mode enabled on {MONITOR_INTERFACE}")
+                monitor_found = True
             
-            MONITOR_INTERFACE = adapter
-            self.monitor_interface = MONITOR_INTERFACE
-            
-            try:
-                subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'txpower', 'fixed', '30'], 
-                             check=True, capture_output=True)
-            except:
-                pass
-            
-            print(f"[+] Monitor mode enabled on {MONITOR_INTERFACE}")
-            return True
+            if monitor_found:
+                # Set TX power
+                try:
+                    subprocess.run(['sudo', 'iw', 'dev', MONITOR_INTERFACE, 'set', 'txpower', 'fixed', '30'], 
+                                 capture_output=True, check=False)
+                except:
+                    pass
+                
+                print(f"[+] ✅ Monitor mode ready on {MONITOR_INTERFACE}")
+                return True
+            else:
+                print("[-] Failed to set monitor mode")
+                return False
                 
         except Exception as e:
             print(f"[-] Failed to set monitor mode: {e}")
@@ -373,7 +417,7 @@ class NetworkScanner:
                         # Get SSID - it's usually at the end
                         ssid = '<Hidden>'
                         if len(parts) > 6:
-                            # Try to find SSID
+                            # Try to find SSID (usually after encryption type)
                             for i, part in enumerate(parts):
                                 if part in ['WPA2', 'WPA', 'WEP', 'OPN', 'WPA3', 'WPA2-CCMP'] and i < len(parts) - 1:
                                     ssid = ' '.join(parts[i+1:])
@@ -393,7 +437,7 @@ class NetworkScanner:
         return networks
     
     def clear_screen(self):
-        """Clear the screen and move cursor to top"""
+        """Clear the screen"""
         sys.stdout.write('\033[2J\033[H')
         sys.stdout.flush()
     
@@ -426,7 +470,6 @@ class NetworkScanner:
         except:
             color = 'white'
         
-        # Keep track of unique BSSIDs to avoid duplicates
         Colors.print_colored(
             f"{num:<5} {ssid[:35]:<35} {network['bssid']:<20} {channel:<5} {encryption:<10} {power:<8} {wps:<6} {'---':<8}",
             color
@@ -441,7 +484,7 @@ class NetworkScanner:
         self.clear_screen()
         self.print_scan_header()
         
-        # Print each network (limit to 30)
+        # Remove duplicates by BSSID
         unique_bssids = {}
         for net in networks:
             if net['bssid'] not in unique_bssids:
@@ -459,7 +502,7 @@ class NetworkScanner:
         print("="*110)
     
     def check_key_pressed(self):
-        """Check if a key was pressed (non-blocking)"""
+        """Check if a key was pressed"""
         import termios
         import fcntl
         
@@ -491,15 +534,15 @@ class NetworkScanner:
         global SCANNER_PROCESS
         
         print(f"\n[+] Starting live scan on {self.adapter}...")
-        print("[+] Press SPACE, ENTER, or 'q' to stop scanning and select target")
-        print("[+] Scanning for access points...")
+        print("[+] Press SPACE, ENTER, or 'q' to stop scanning")
+        print("[+] Scanning for access points...\n")
         
         self.networks = []
         self.running = True
         self.scanning = True
         
         try:
-            # Start airodump-ng with faster update
+            # Start airodump-ng
             self.process = subprocess.Popen(
                 ['sudo', 'airodump-ng', self.adapter, '--band', 'abg'],
                 stdout=subprocess.PIPE,
@@ -520,7 +563,6 @@ class NetworkScanner:
             
             while self.running:
                 try:
-                    # Read line with timeout
                     line = self.process.stdout.readline()
                     if not line:
                         break
@@ -529,16 +571,15 @@ class NetworkScanner:
                     if len(lines_buffer) > 200:
                         lines_buffer = lines_buffer[-200:]
                     
-                    # Update display every 0.5 seconds
+                    # Update display every 0.3 seconds for faster response
                     current_time = time.time()
-                    if current_time - last_update >= 0.5:
+                    if current_time - last_update >= 0.3:
                         networks = self.parse_airodump_output(lines_buffer)
                         if networks:
                             self.networks = networks
                             self.display_networks(networks)
                         last_update = current_time
                     
-                    # Check if user pressed a key
                     if self.check_key_pressed():
                         self.running = False
                         break
@@ -571,7 +612,7 @@ class NetworkScanner:
             print("\n[-] No networks found to select!")
             return None
         
-        # Clear duplicates
+        # Remove duplicates
         unique_bssids = {}
         for net in networks:
             if net['bssid'] not in unique_bssids:
@@ -624,7 +665,7 @@ class NetworkScanner:
 
 def main():
     """Main function"""
-    # Register cleanup handlers FIRST
+    # Register cleanup handlers
     register_cleanup()
     
     print(BANNER)
@@ -656,7 +697,8 @@ def main():
     print("\n📋 Detected Adapters:")
     for i, adapter in enumerate(adapters, 1):
         info = handler.get_adapter_info(adapter)
-        print(f"   {i}. {adapter} ({info['mode']})")
+        status = "✅ Monitor" if info['mode'] == 'Monitor' else "Managed"
+        print(f"   {i}. {adapter} ({status})")
     
     # Select adapter
     print()
@@ -703,7 +745,7 @@ def main():
     
     # Start live scan
     print("\n[+] Starting live network scan...")
-    print("[+] Press SPACE, ENTER, or 'q' to stop scanning and select target")
+    print("[+] Press SPACE, ENTER, or 'q' to stop scanning")
     time.sleep(2)
     
     networks = scanner.scan_networks_live()
@@ -715,7 +757,7 @@ def main():
             print("\n[+] Target selected successfully!")
             print(f"[+] Ready to capture packets from {target['ssid']}")
             
-            # Save target info for next steps
+            # Save target info
             with open('/tmp/yevil_target.txt', 'w') as f:
                 f.write(f"{target['bssid']}\n")
                 f.write(f"{target['channel']}\n")
