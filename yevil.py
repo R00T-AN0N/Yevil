@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Yevil - WiFi Security Testing Tool
-Step 2: Live Network Scanning with Interactive Selection & Cleanup
+Step 2: Live Network Scanning with Interactive Selection & Proper Cleanup
 """
 
 import os
@@ -22,6 +22,7 @@ CLEANUP_DONE = False
 MONITOR_INTERFACE = None
 ORIGINAL_INTERFACE = None
 SCANNER_PROCESS = None
+ADAPTER_HANDLER = None
 
 # ============================================
 # COLORS
@@ -57,60 +58,77 @@ def cleanup_monitor_mode():
     
     CLEANUP_DONE = True
     
-    Colors.print_colored("\n\n[+] Cleaning up...", 'yellow', True)
+    Colors.print_colored("\n\n" + "="*60, 'yellow')
+    Colors.print_colored("[+] Cleaning up monitor mode...", 'yellow', True)
+    Colors.print_colored("="*60, 'yellow')
     
-    # Kill any running airodump processes
+    # Step 1: Kill all interfering processes
     try:
-        subprocess.run(['sudo', 'pkill', '-f', 'airodump-ng'], capture_output=True)
-    except:
-        pass
+        Colors.print_colored("[+] Killing interfering processes...", 'blue')
+        subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
+                     capture_output=True, text=True)
+        time.sleep(1)
+    except Exception as e:
+        Colors.print_colored(f"[-] Error killing processes: {e}", 'red')
     
-    # Kill any running aireplay processes
-    try:
-        subprocess.run(['sudo', 'pkill', '-f', 'aireplay-ng'], capture_output=True)
-    except:
-        pass
-    
-    # Stop monitor mode if we have the interface
+    # Step 2: Stop monitor interface if it exists
     if MONITOR_INTERFACE:
         try:
-            Colors.print_colored(f"[+] Stopping monitor mode on {MONITOR_INTERFACE}...", 'blue')
-            subprocess.run(['sudo', 'airmon-ng', 'stop', MONITOR_INTERFACE], 
-                         capture_output=True, text=True)
-            Colors.print_colored(f"[+] Monitor mode stopped on {MONITOR_INTERFACE}", 'green')
+            Colors.print_colored(f"[+] Stopping monitor interface: {MONITOR_INTERFACE}", 'blue')
+            result = subprocess.run(['sudo', 'airmon-ng', 'stop', MONITOR_INTERFACE], 
+                                  capture_output=True, text=True)
+            Colors.print_colored(f"[+] {result.stdout.strip()}", 'green')
+            time.sleep(1)
         except Exception as e:
-            Colors.print_colored(f"[-] Error stopping monitor mode: {e}", 'red')
+            Colors.print_colored(f"[-] Error stopping monitor: {e}", 'red')
     
-    # Restart network manager
+    # Step 3: Reset original interface to managed mode
+    if ORIGINAL_INTERFACE:
+        try:
+            Colors.print_colored(f"[+] Resetting {ORIGINAL_INTERFACE} to managed mode...", 'blue')
+            
+            # Bring interface down
+            subprocess.run(['sudo', 'ip', 'link', 'set', ORIGINAL_INTERFACE, 'down'], 
+                         capture_output=True, check=False)
+            
+            # Set to managed mode
+            subprocess.run(['sudo', 'iw', 'dev', ORIGINAL_INTERFACE, 'set', 'type', 'managed'], 
+                         capture_output=True, check=False)
+            
+            # Bring interface up
+            subprocess.run(['sudo', 'ip', 'link', 'set', ORIGINAL_INTERFACE, 'up'], 
+                         capture_output=True, check=False)
+            
+            Colors.print_colored(f"[+] {ORIGINAL_INTERFACE} reset to managed mode", 'green')
+            time.sleep(1)
+        except Exception as e:
+            Colors.print_colored(f"[-] Error resetting interface: {e}", 'red')
+    
+    # Step 4: Restart NetworkManager
     try:
         Colors.print_colored("[+] Restarting NetworkManager...", 'blue')
         subprocess.run(['sudo', 'systemctl', 'restart', 'NetworkManager'], 
-                     capture_output=True)
+                     capture_output=True, check=False)
         Colors.print_colored("[+] NetworkManager restarted", 'green')
+    except Exception as e:
+        Colors.print_colored(f"[-] Error restarting NetworkManager: {e}", 'red')
+    
+    # Step 5: Kill any remaining airodump processes
+    try:
+        subprocess.run(['sudo', 'pkill', '-f', 'airodump-ng'], capture_output=True, check=False)
+        subprocess.run(['sudo', 'pkill', '-f', 'aireplay-ng'], capture_output=True, check=False)
     except:
         pass
     
-    # Reset original interface if different
-    if ORIGINAL_INTERFACE and ORIGINAL_INTERFACE != MONITOR_INTERFACE:
-        try:
-            Colors.print_colored(f"[+] Resetting {ORIGINAL_INTERFACE} to managed mode...", 'blue')
-            subprocess.run(['sudo', 'ip', 'link', 'set', ORIGINAL_INTERFACE, 'down'], 
-                         capture_output=True)
-            subprocess.run(['sudo', 'iw', 'dev', ORIGINAL_INTERFACE, 'set', 'type', 'managed'], 
-                         capture_output=True)
-            subprocess.run(['sudo', 'ip', 'link', 'set', ORIGINAL_INTERFACE, 'up'], 
-                         capture_output=True)
-            Colors.print_colored(f"[+] {ORIGINAL_INTERFACE} reset to managed mode", 'green')
-        except:
-            pass
-    
+    Colors.print_colored("="*60, 'yellow')
     Colors.print_colored("[+] Cleanup complete!", 'green', True)
+    Colors.print_colored("="*60, 'yellow')
 
 def signal_handler(signum, frame):
     """Handle Ctrl+C and other signals"""
-    Colors.print_colored(f"\n[!] Signal {signum} received", 'yellow')
+    Colors.print_colored(f"\n\n[!] Signal {signum} received (Ctrl+C)", 'yellow')
     cleanup_monitor_mode()
-    Colors.print_colored("\n[+] Exiting Yevil. Goodbye!", 'cyan', True)
+    Colors.print_colored("\n[+] Yevil exited safely. Goodbye!", 'cyan', True)
     sys.exit(0)
 
 def register_cleanup():
@@ -156,6 +174,7 @@ class AdapterHandler:
         self.adapters = []
         self.selected_adapter = None
         self.monitor_interface = None
+        self.original_interface = None
         
     def detect_adapters(self) -> list:
         """Detect all wireless adapters"""
@@ -168,7 +187,7 @@ class AdapterHandler:
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
                     adapter = line.split()[0]
-                    if adapter not in adapters:
+                    if adapter not in adapters and 'mon' not in adapter:
                         adapters.append(adapter)
             
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
@@ -177,18 +196,20 @@ class AdapterHandler:
                     match = re.search(r':\s*(\w+)', line)
                     if match:
                         adapter = match.group(1)
-                        if adapter not in adapters:
+                        if adapter not in adapters and 'mon' not in adapter:
                             adapters.append(adapter)
             
             if os.path.exists('/sys/class/net/'):
                 for device in os.listdir('/sys/class/net/'):
-                    if device.startswith('wlan') or device.startswith('wlp') or 'mon' in device:
+                    if (device.startswith('wlan') or device.startswith('wlp')) and 'mon' not in device:
                         if device not in adapters:
                             adapters.append(device)
         
         except Exception as e:
             Colors.print_colored(f"[-] Error detecting adapters: {e}", 'red')
         
+        # Remove duplicates
+        adapters = list(set(adapters))
         self.adapters = adapters
         
         if adapters:
@@ -276,20 +297,23 @@ class AdapterHandler:
         
         Colors.print_colored(f"\n[+] Setting {adapter} to monitor mode with TX Power 30...", 'cyan', True)
         
+        self.original_interface = adapter
         ORIGINAL_INTERFACE = adapter
         
         try:
+            # Step 1: Kill interfering processes
             Colors.print_colored("[+] Killing interfering processes...", 'blue')
             subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
                          capture_output=True, text=True)
             time.sleep(1)
             
-            # Try airmon-ng first
+            # Step 2: Try airmon-ng first
             try:
+                Colors.print_colored("[+] Using airmon-ng...", 'blue')
                 result = subprocess.run(['sudo', 'airmon-ng', 'start', adapter], 
                                       capture_output=True, text=True)
                 
-                # Look for the monitor interface name
+                # Look for monitor interface
                 for line in result.stdout.split('\n'):
                     if 'mon' in line and adapter in line:
                         match = re.search(r'(\w+mon\d*)', line)
@@ -298,10 +322,10 @@ class AdapterHandler:
                             self.monitor_interface = MONITOR_INTERFACE
                             Colors.print_colored(f"[+] Monitor mode enabled on {MONITOR_INTERFACE}", 'green')
                             return True
-            except:
-                pass
+            except Exception as e:
+                Colors.print_colored(f"   airmon-ng failed: {e}", 'yellow')
             
-            # Manual method if airmon-ng fails
+            # Step 3: Manual method
             Colors.print_colored("[+] Using manual monitor mode setup...", 'blue')
             
             commands = [
@@ -605,7 +629,9 @@ def main():
         sys.exit(1)
     
     # Create adapter handler
+    global ADAPTER_HANDLER
     handler = AdapterHandler()
+    ADAPTER_HANDLER = handler
     
     # Detect adapters
     adapters = handler.detect_adapters()
@@ -660,6 +686,7 @@ def main():
         monitor_adapter = selected
         global MONITOR_INTERFACE
         MONITOR_INTERFACE = selected
+        ORIGINAL_INTERFACE = selected
     
     # Create scanner
     scanner = NetworkScanner(monitor_adapter)
