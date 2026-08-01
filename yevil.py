@@ -181,7 +181,7 @@ class AdapterHandler:
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
                     adapter = line.split()[0]
-                    if adapter not in adapters and 'mon' not in adapter:
+                    if adapter not in adapters:
                         adapters.append(adapter)
             
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
@@ -190,19 +190,19 @@ class AdapterHandler:
                     match = re.search(r':\s*(\w+)', line)
                     if match:
                         adapter = match.group(1)
-                        if adapter not in adapters and 'mon' not in adapter:
+                        if adapter not in adapters:
                             adapters.append(adapter)
             
             if os.path.exists('/sys/class/net/'):
                 for device in os.listdir('/sys/class/net/'):
-                    if (device.startswith('wlan') or device.startswith('wlp')) and 'mon' not in device:
+                    if device.startswith('wlan') or device.startswith('wlp') or 'mon' in device:
                         if device not in adapters:
                             adapters.append(device)
         
         except Exception as e:
             Colors.print_colored(f"[-] Error detecting adapters: {e}", 'red')
         
-        self.adapters = list(set(adapters))
+        self.adapters = adapters
         
         if adapters:
             Colors.print_colored(f"[+] Found {len(adapters)} adapter(s)", 'green')
@@ -292,13 +292,12 @@ class AdapterHandler:
         ORIGINAL_INTERFACE = adapter
         
         try:
-            # Step 1: Kill interfering processes
             Colors.print_colored("[+] Killing interfering processes...", 'blue')
             subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
                          capture_output=True, text=True)
             time.sleep(1)
             
-            # Step 2: Try airmon-ng first
+            # Try airmon-ng first
             try:
                 Colors.print_colored("[+] Using airmon-ng...", 'blue')
                 result = subprocess.run(['sudo', 'airmon-ng', 'start', adapter], 
@@ -315,7 +314,7 @@ class AdapterHandler:
             except Exception as e:
                 Colors.print_colored(f"   airmon-ng failed: {e}", 'yellow')
             
-            # Step 3: Manual method
+            # Manual method
             Colors.print_colored("[+] Using manual monitor mode setup...", 'blue')
             
             commands = [
