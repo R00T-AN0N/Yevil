@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Yevil - WiFi Security Testing Tool
-Real-Time Network Scanner - Working Version
+Direct Command Approach - Uses the exact command that works
 """
 
 import os
@@ -11,6 +11,7 @@ import re
 import time
 import signal
 import threading
+import pty
 from datetime import datetime
 
 # ============================================
@@ -79,17 +80,11 @@ def cleanup_monitor_mode():
     if SCANNER_PROCESS:
         try:
             SCANNER_PROCESS.terminate()
-            time.sleep(0.5)
+            time.sleep(1)
             if SCANNER_PROCESS.poll() is None:
                 SCANNER_PROCESS.kill()
         except:
             pass
-    
-    try:
-        subprocess.run(['sudo', 'pkill', '-f', 'airodump-ng'], capture_output=True, check=False)
-        subprocess.run(['sudo', 'pkill', '-f', 'aireplay-ng'], capture_output=True, check=False)
-    except:
-        pass
     
     if MONITOR_INTERFACE:
         try:
@@ -101,12 +96,13 @@ def cleanup_monitor_mode():
             subprocess.run(['sudo', 'ip', 'link', 'set', MONITOR_INTERFACE, 'up'], 
                          capture_output=True, check=False)
             print(f"[+] {MONITOR_INTERFACE} reset to managed mode")
-        except:
-            pass
+        except Exception as e:
+            print(f"[-] Cleanup error: {e}")
     
     try:
         subprocess.run(['sudo', 'systemctl', 'restart', 'NetworkManager'], 
                      capture_output=True, check=False)
+        print("[+] NetworkManager restarted")
     except:
         pass
     
@@ -134,34 +130,29 @@ class AdapterHandler:
         
         adapters = []
         try:
-            # Check iwconfig for wireless interfaces
             result = subprocess.run(['iwconfig'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'IEEE 802.11' in line:
                     adapter = line.split()[0]
-                    if adapter not in adapters:
+                    if adapter not in adapters and 'mon' not in adapter:
                         adapters.append(adapter)
             
-            # Also check ip link
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'wlan' in line.lower() or 'wlp' in line.lower():
                     match = re.search(r':\s*(\w+)', line)
                     if match:
                         adapter = match.group(1)
-                        if adapter not in adapters:
+                        if adapter not in adapters and 'mon' not in adapter:
                             adapters.append(adapter)
         except:
             pass
-        
-        # Remove monitor interfaces from the list (we want the original)
-        adapters = [a for a in adapters if 'mon' not in a]
         
         self.adapters = adapters
         return adapters
     
     def get_adapter_info(self, adapter: str) -> dict:
-        info = {'name': adapter, 'mode': 'Unknown', 'driver': 'Unknown'}
+        info = {'name': adapter, 'mode': 'Unknown'}
         
         try:
             result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
@@ -185,13 +176,11 @@ class AdapterHandler:
         ORIGINAL_INTERFACE = adapter
         
         try:
-            # Kill interfering processes
             print("[+] Killing interfering processes...")
             subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
                          capture_output=True, text=True)
             time.sleep(1)
             
-            # Use the manual method that works
             print("[+] Setting monitor mode using iw...")
             subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'down'], 
                          check=True, capture_output=True)
@@ -200,17 +189,10 @@ class AdapterHandler:
             subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'up'], 
                          check=True, capture_output=True)
             
-            # Set TX power
-            try:
-                subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'txpower', 'fixed', '30'], 
-                             capture_output=True, check=False)
-            except:
-                pass
-            
             MONITOR_INTERFACE = adapter
             self.monitor_interface = MONITOR_INTERFACE
             
-            # Verify monitor mode
+            # Verify
             result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
             if 'Mode:Monitor' in result.stdout:
                 print(f"[+] ✅ {adapter} is now in MONITOR MODE!")
@@ -225,178 +207,120 @@ class AdapterHandler:
 
 
 # ============================================
-# REAL-TIME SCANNER
+# SCANNER - DIRECT APPROACH
 # ============================================
 
-class RealTimeScanner:
-    def __init__(self, adapter: str):
-        self.adapter = adapter
-        self.process = None
-        self.running = True
-        
-    def parse_line(self, line: str) -> dict:
-        """Parse airodump-ng output line"""
-        parts = line.strip().split()
-        
-        # Need at least 10 parts for a valid BSSID line
-        if len(parts) < 10:
-            return None
-        
-        # Check if first part looks like BSSID
-        bssid_pattern = r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})'
-        if not re.match(bssid_pattern, parts[0]):
-            return None
-        
-        try:
-            # Extract SSID - it's everything after the 10th column
-            ssid = ' '.join(parts[10:]) if len(parts) > 10 else '<Hidden>'
-            if ssid == '' or ssid == '<length: 0>':
-                ssid = '<Hidden>'
-            
-            return {
-                'bssid': parts[0],
-                'power': parts[1] if len(parts) > 1 else '0',
-                'beacons': parts[2] if len(parts) > 2 else '0',
-                'data': parts[3] if len(parts) > 3 else '0',
-                'channel': parts[5] if len(parts) > 5 else '0',
-                'mb': parts[6] if len(parts) > 6 else '0',
-                'encryption': parts[7] if len(parts) > 7 else 'OPN',
-                'cipher': parts[8] if len(parts) > 8 else '',
-                'authentication': parts[9] if len(parts) > 9 else '',
-                'ssid': ssid
-            }
-        except:
-            return None
+def scan_networks_direct(adapter):
+    """Scan networks using the exact command that works"""
+    global SCANNER_PROCESS
     
-    def print_header(self):
-        """Print table header"""
-        print(Colors.clear)
-        print("="*120)
-        print(f"🔍 YEVIL - Real-Time WiFi Scanner".center(120))
-        print("="*120)
-        print(f"📡 Adapter: {self.adapter} (Monitor Mode)".center(120))
-        print("="*120)
-        print()
-        print(f"{'#':<4} {'ESSID':<32} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<12} {'BEACONS':<8}")
-        print("-"*120)
+    print(f"\n[+] Starting scan on {adapter}")
+    print("[+] Press Ctrl+C to stop")
+    print("[+] Scanning for access points...\n")
+    print("="*120)
     
-    def print_network(self, num: int, net: dict):
-        """Print a network row"""
-        ssid = net['ssid'][:32] if len(net['ssid']) > 32 else net['ssid']
-        if ssid == '':
-            ssid = '<Hidden>'
+    # The exact command that works
+    cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg']
+    print(f"[+] Running: {' '.join(cmd)}\n")
+    print("="*120)
+    
+    try:
+        # Use pty to handle the output properly
+        master_fd, slave_fd = pty.openpty()
         
-        # Color by signal strength
-        try:
-            pwr = int(net['power'])
-            if pwr > -50:
-                color = 'green'
-            elif pwr > -65:
-                color = 'yellow'
-            else:
-                color = 'red'
-        except:
-            color = 'white'
-        
-        Colors.print_colored(
-            f"{num:<4} {ssid[:32]:<32} {net['bssid']:<18} {net['channel']:<4} "
-            f"{net['power']:<6} {net['encryption']:<8} {net['cipher']:<8} "
-            f"{net['authentication']:<12} {net['beacons']:<8}",
-            color
+        process = subprocess.Popen(
+            cmd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            stdin=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1
         )
-    
-    def scan_realtime(self):
-        """Scan in real-time mode"""
-        global SCANNER_PROCESS
+        SCANNER_PROCESS = process
         
-        print(f"\n[+] Starting real-time scan on {self.adapter}")
-        print("[+] Press Ctrl+C to stop")
-        print("[+] Scanning for access points...\n")
-        time.sleep(1)
+        # Close slave fd in parent
+        os.close(slave_fd)
         
-        self.print_header()
+        # Read from master fd
+        output_buffer = []
         
-        networks = []
-        in_bssid_section = False
-        last_update = time.time()
-        found_any = False
-        
-        try:
-            # Run airodump-ng on the adapter
-            self.process = subprocess.Popen(
-                ['sudo', 'airodump-ng', self.adapter, '--band', 'abg'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1
-            )
-            SCANNER_PROCESS = self.process
-            
-            while self.running:
-                try:
-                    line = self.process.stdout.readline()
-                    if not line:
-                        break
-                    
-                    # Check for BSSID header
-                    if 'BSSID' in line and 'PWR' in line:
-                        in_bssid_section = True
-                        continue
-                    
-                    # Check for Station section (end of BSSID list)
-                    if in_bssid_section and 'Station' in line:
-                        in_bssid_section = False
-                        continue
-                    
-                    # Parse BSSID lines
-                    if in_bssid_section and line.strip():
-                        net = self.parse_line(line)
-                        if net:
-                            found_any = True
-                            # Check if this is a new network (unique BSSID)
-                            exists = False
-                            for existing in networks:
-                                if existing['bssid'] == net['bssid']:
-                                    # Update with latest data
-                                    existing.update(net)
-                                    exists = True
-                                    break
-                            if not exists:
-                                networks.append(net)
-                    
-                    # Update display every 0.5 seconds
-                    current_time = time.time()
-                    if current_time - last_update >= 0.5:
-                        self.print_header()
-                        if networks:
-                            for i, net in enumerate(networks, 1):
-                                self.print_network(i, net)
-                        else:
-                            print("\n" + " "*50 + "🔍 Scanning for networks...")
-                            print(" "*50 + "No networks found yet")
-                        
-                        print("-"*120)
-                        print(f"Networks found: {len(networks)} | Adapter: {self.adapter}")
-                        print("[Press Ctrl+C to stop scanning]")
-                        print("="*120)
-                        last_update = current_time
-                        
-                except:
+        while True:
+            try:
+                # Read a chunk of data
+                data = os.read(master_fd, 1024).decode('utf-8', errors='ignore')
+                if not data:
                     break
-            
-        except Exception as e:
-            print(f"[-] Error during scan: {e}")
+                
+                # Print directly to stdout
+                sys.stdout.write(data)
+                sys.stdout.flush()
+                
+                # Store in buffer
+                output_buffer.append(data)
+                
+            except Exception as e:
+                break
         
-        finally:
-            if self.process:
-                self.process.terminate()
-                time.sleep(1)
-                if self.process.poll() is None:
-                    self.process.kill()
-                self.process = None
-                SCANNER_PROCESS = None
+        process.wait()
+        SCANNER_PROCESS = None
+        os.close(master_fd)
         
-        return networks
+        return output_buffer
+        
+    except Exception as e:
+        print(f"[-] Error during scan: {e}")
+        return []
+
+
+# ============================================
+# SIMPLE SCANNER - JUST PASS THROUGH
+# ============================================
+
+def scan_networks_simple(adapter):
+    """Simply pass through the airodump-ng output"""
+    global SCANNER_PROCESS
+    
+    print(f"\n[+] Starting scan on {adapter}")
+    print("[+] Press Ctrl+C to stop")
+    print("[+] Scanning for access points...\n")
+    print("="*120)
+    
+    cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg']
+    print(f"[+] Running: {' '.join(cmd)}\n")
+    print("="*120)
+    
+    try:
+        # Use subprocess with PIPE and read line by line
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+        SCANNER_PROCESS = process
+        
+        # Read and print output in real-time
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        
+        process.wait()
+        SCANNER_PROCESS = None
+        
+    except Exception as e:
+        print(f"[-] Error during scan: {e}")
+        
+    finally:
+        if SCANNER_PROCESS:
+            SCANNER_PROCESS.terminate()
+            time.sleep(1)
+            if SCANNER_PROCESS.poll() is None:
+                SCANNER_PROCESS.kill()
+            SCANNER_PROCESS = None
 
 
 # ============================================
@@ -410,7 +334,7 @@ def main():
     
     print(BANNER)
     
-    Colors.print_colored("[+] Yevil - Real-Time WiFi Scanner", 'cyan', True)
+    Colors.print_colored("[+] Yevil - WiFi Security Testing Tool", 'cyan', True)
     Colors.print_colored("[+] For Educational Purposes Only!", 'yellow')
     Colors.print_colored("[+] Press Ctrl+C to stop scanning and exit", 'yellow')
     print("="*50)
@@ -476,15 +400,16 @@ def main():
         MONITOR_INTERFACE = selected
         Colors.print_colored(f"[+] Already in monitor mode: {monitor_adapter}", 'green')
     
-    # Start scanner
-    scanner = RealTimeScanner(monitor_adapter)
-    networks = scanner.scan_realtime()
+    # Ask which scan method to use
+    print("\n[+] Choose scanning method:")
+    print("   1. Simple (recommended) - Direct pass-through")
+    print("   2. Alternative - PTY method")
+    choice = input("\n[?] Select method (1-2, default=1): ")
     
-    if networks:
-        Colors.print_colored(f"\n[+] Found {len(networks)} networks", 'green', True)
+    if choice == '2':
+        scan_networks_direct(monitor_adapter)
     else:
-        Colors.print_colored("\n[-] No networks found!", 'red')
-        Colors.print_colored("[!] Make sure you're near a WiFi router", 'yellow')
+        scan_networks_simple(monitor_adapter)
     
     # Cleanup
     print("\n" + "="*50)
