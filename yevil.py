@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Real‑Time WiFi Scanner (No Files, Pure Parsing)
-Colourful table with client counts, updated live.
+Yevil - Real‑Time WiFi Scanner (CSV-based, no leftover files)
 """
 
 import os
@@ -9,8 +8,7 @@ import sys
 import subprocess
 import time
 import signal
-import re
-import threading
+import csv
 from collections import defaultdict
 
 # ============================================
@@ -23,7 +21,6 @@ class Colors:
     yellow = '\033[93m'
     blue = '\033[94m'
     cyan = '\033[96m'
-    magenta = '\033[95m'
     white = '\033[97m'
     reset = '\033[0m'
     bold = '\033[1m'
@@ -63,6 +60,7 @@ BANNER = f"""
 MONITOR_INTERFACE = None
 SCANNER_PROCESS = None
 STOP_SCANNING = False
+CSV_PREFIX = '/tmp/yevil_scan'
 
 # ============================================
 # CLEANUP
@@ -80,6 +78,14 @@ def cleanup():
         except:
             pass
         SCANNER_PROCESS = None
+
+    # Delete temporary CSV files
+    for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except:
+                pass
 
     if MONITOR_INTERFACE:
         try:
@@ -152,186 +158,167 @@ def set_monitor_mode(adapter):
         return False
 
 # ============================================
-# REAL-TIME PARSER & DISPLAY
+# CSV PARSER
 # ============================================
 
-class RealtimeScanner:
-    def __init__(self, adapter):
-        self.adapter = adapter
-        self.networks = {}          # bssid -> dict
-        self.clients = defaultdict(list)   # bssid -> list of station MACs
-        self.process = None
-        self.running = True
-        self.lock = threading.Lock()
-        self.last_display = 0
-        self.in_bssid = False
-        self.in_station = False
+def parse_networks(csv_file):
+    """Parse BSSID section of the CSV."""
+    networks = []
+    try:
+        with open(csv_file, 'r') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 14:
+                    continue
+                if row[0] == 'BSSID':
+                    continue
+                bssid = row[0].strip()
+                if not bssid:
+                    continue
+                networks.append({
+                    'bssid': bssid,
+                    'first_seen': row[1],
+                    'last_seen': row[2],
+                    'channel': row[3],
+                    'speed': row[4],
+                    'privacy': row[5],
+                    'cipher': row[6],
+                    'authentication': row[7],
+                    'power': row[8],
+                    'beacons': row[9],
+                    'ssid': row[13].strip() if len(row) > 13 and row[13].strip() else '<Hidden>'
+                })
+    except:
+        pass
+    return networks
 
-    def parse_line(self, line):
-        """Parse a line from airodump-ng output."""
-        line = line.strip()
-        if not line:
-            return
+def parse_stations(csv_file):
+    """Parse station section to count clients per BSSID."""
+    clients = defaultdict(int)
+    try:
+        with open(csv_file, 'r') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 8:
+                    continue
+                if row[0] == 'Station MAC':
+                    continue
+                bssid = row[5].strip()
+                if bssid:
+                    clients[bssid] += 1
+    except:
+        pass
+    return clients
 
-        # Detect headers
-        if 'BSSID' in line and 'PWR' in line and 'Beacons' in line:
-            self.in_bssid = True
-            self.in_station = False
-            return
-        if 'Station' in line and 'PWR' in line and 'Lost' in line:
-            self.in_bssid = False
-            self.in_station = True
-            return
+# ============================================
+# DISPLAY
+# ============================================
 
-        # BSSID line: BSSID  PWR  Beacons  #Data  #/s  CH  MB  ENC  CIPHER  AUTH  ESSID
-        if self.in_bssid:
-            parts = line.split()
-            if len(parts) >= 10:
-                # Check if first part is MAC
-                if re.match(r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})', parts[0]):
-                    bssid = parts[0]
-                    power = parts[1] if len(parts) > 1 else '0'
-                    beacons = parts[2] if len(parts) > 2 else '0'
-                    channel = parts[5] if len(parts) > 5 else '0'
-                    encryption = parts[7] if len(parts) > 7 else 'OPN'
-                    cipher = parts[8] if len(parts) > 8 else ''
-                    auth = parts[9] if len(parts) > 9 else ''
-                    ssid = ' '.join(parts[10:]) if len(parts) > 10 else '<Hidden>'
-                    if ssid == '' or ssid == '<length: 0>':
-                        ssid = '<Hidden>'
-                    with self.lock:
-                        self.networks[bssid] = {
-                            'bssid': bssid,
-                            'power': power,
-                            'beacons': beacons,
-                            'channel': channel,
-                            'encryption': encryption,
-                            'cipher': cipher,
-                            'authentication': auth,
-                            'ssid': ssid
-                        }
+def display_table(networks, clients):
+    """Display a colourful table with client counts."""
+    if not networks:
+        sys.stdout.write(Colors.clear)
+        sys.stdout.flush()
+        print(f"{Colors.cyan}{'='*120}")
+        print(f"  YEVIL - Real-Time WiFi Scanner".center(120))
+        print(f"  Scanning for networks...".center(120))
+        print(f"{'='*120}{Colors.reset}")
+        return
 
-        # Station line: BSSID  STATION  PWR  Rate  Lost  Frames  Notes  Probes
-        if self.in_station:
-            parts = line.split()
-            if len(parts) >= 8:
-                # First part is BSSID, second is station MAC
-                if re.match(r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})', parts[0]):
-                    bssid = parts[0]
-                    station = parts[1]
-                    with self.lock:
-                        if station not in self.clients[bssid]:
-                            self.clients[bssid].append(station)
+    # Sort by signal strength
+    try:
+        networks_sorted = sorted(networks,
+                                 key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
+                                 reverse=True)
+    except:
+        networks_sorted = networks
 
-    def display_table(self):
-        """Print a colourful table with client counts."""
-        with self.lock:
-            if not self.networks:
-                # Show scanning message
-                sys.stdout.write(Colors.clear)
-                sys.stdout.flush()
-                print(f"{Colors.cyan}{'='*120}")
-                print(f"  YEVIL - Real-Time WiFi Scanner".center(120))
-                print(f"  Adapter: {self.adapter} (Monitor Mode)".center(120))
-                print(f"{'='*120}{Colors.reset}")
-                print("\n" + " "*50 + "🔍 Scanning for networks...")
-                print(f"{Colors.cyan}{'='*120}{Colors.reset}")
-                return
+    sys.stdout.write(Colors.clear)
+    sys.stdout.flush()
 
-            # Sort by signal strength
-            try:
-                sorted_networks = sorted(self.networks.values(),
-                                         key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
-                                         reverse=True)
-            except:
-                sorted_networks = list(self.networks.values())
+    print(f"{Colors.cyan}{'='*120}")
+    print(f"  YEVIL - Real-Time WiFi Scanner".center(120))
+    print(f"  Networks found: {len(networks)}".center(120))
+    print(f"{'='*120}{Colors.reset}")
 
-            sys.stdout.write(Colors.clear)
-            sys.stdout.flush()
+    # Header
+    header = f"{Colors.bold}{Colors.yellow}"
+    header += f"{'#':<4} {'ESSID':<30} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
+    header += f"{Colors.reset}"
+    print(header)
+    print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
 
-            print(f"{Colors.cyan}{'='*120}")
-            print(f"  YEVIL - Real-Time WiFi Scanner".center(120))
-            print(f"  Adapter: {self.adapter} (Monitor Mode)".center(120))
-            print(f"  Networks Found: {len(self.networks)}".center(120))
-            print(f"{'='*120}{Colors.reset}")
-
-            # Header
-            header = f"{Colors.bold}{Colors.yellow}"
-            header += f"{'#':<4} {'ESSID':<30} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
-            header += f"{Colors.reset}"
-            print(header)
-            print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-
-            for idx, net in enumerate(sorted_networks, 1):
-                # Colour by signal
-                try:
-                    pwr = int(net['power'])
-                    if pwr > -50:
-                        color = 'green'
-                    elif pwr > -65:
-                        color = 'yellow'
-                    else:
-                        color = 'red'
-                except:
-                    color = 'white'
-
-                ssid = net['ssid'][:30] if len(net['ssid']) > 30 else net['ssid']
-                if ssid == '':
-                    ssid = '<Hidden>'
-
-                client_count = len(self.clients.get(net['bssid'], []))
-
-                row = f"{idx:<4} {ssid:<30} {net['bssid']:<18} {net['channel']:<4} "
-                row += f"{net['power']:<6} {net['encryption']:<8} {net['cipher']:<8} {net['authentication']:<10} {client_count:<6}"
-                Colors.print_colored(row, color)
-
-            print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-            print(f"{Colors.white}Press Ctrl+C to stop scanning{Colors.reset}")
-            print(f"{Colors.cyan}{'='*120}{Colors.reset}")
-
-    def scan(self):
-        """Start airodump-ng and parse output in real-time."""
-        global SCANNER_PROCESS, STOP_SCANNING
-
-        cmd = ['sudo', 'airodump-ng', self.adapter, '--band', 'abg']
-        print(f"\n[+] Running: {' '.join(cmd)}")
-        print("[+] Parsing output in real-time...\n")
-        time.sleep(1)
-
+    for idx, net in enumerate(networks_sorted, 1):
         try:
-            self.process = subprocess.Popen(cmd,
-                                            stdout=subprocess.PIPE,
-                                            stderr=subprocess.PIPE,
-                                            text=True,
-                                            bufsize=1)
-            SCANNER_PROCESS = self.process
+            pwr = int(net['power'])
+            color = 'green' if pwr > -50 else 'yellow' if pwr > -65 else 'red'
+        except:
+            color = 'white'
 
-            # Read line by line
-            while self.running and not STOP_SCANNING:
-                line = self.process.stdout.readline()
-                if not line:
-                    break
-                self.parse_line(line)
+        ssid = net['ssid'][:30] if len(net['ssid']) > 30 else net['ssid']
+        if ssid == '':
+            ssid = '<Hidden>'
+        client_count = clients.get(net['bssid'], 0)
 
-                # Update display every 0.5 seconds
-                now = time.time()
-                if now - self.last_display >= 0.5:
-                    self.display_table()
-                    self.last_display = now
+        row = f"{idx:<4} {ssid:<30} {net['bssid']:<18} {net['channel']:<4} "
+        row += f"{net['power']:<6} {net['privacy']:<8} {net['cipher']:<8} {net['authentication']:<10} {client_count:<6}"
+        Colors.print_colored(row, color)
 
-            # Final display
-            self.display_table()
+    print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
+    print(f"{Colors.white}Press Ctrl+C to stop scanning{Colors.reset}")
+    print(f"{Colors.cyan}{'='*120}{Colors.reset}")
 
-        except Exception as e:
-            print(f"[-] Error: {e}")
-        finally:
-            if self.process:
-                self.process.terminate()
-                time.sleep(0.5)
-                if self.process.poll() is None:
-                    self.process.kill()
-                self.process = None
-                SCANNER_PROCESS = None
+# ============================================
+# SCANNER LOOP
+# ============================================
+
+def start_scanner(adapter):
+    global SCANNER_PROCESS, STOP_SCANNING
+
+    # Remove old CSV files
+    for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except:
+                pass
+
+    # Start airodump-ng with CSV output
+    cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg',
+           '--output-format', 'csv',
+           '--write', CSV_PREFIX,
+           '--write-interval', '1']
+    print(f"\n[+] Running: {' '.join(cmd)}")
+    print("[+] Display will update every second...")
+    time.sleep(1)
+
+    try:
+        SCANNER_PROCESS = subprocess.Popen(cmd,
+                                           stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"[-] Failed to start scanner: {e}")
+        return
+
+    # Initial delay for first CSV
+    time.sleep(2)
+
+    while not STOP_SCANNING:
+        time.sleep(1)
+        if not os.path.exists(f'{CSV_PREFIX}-01.csv'):
+            continue
+
+        networks = parse_networks(f'{CSV_PREFIX}-01.csv')
+        clients = parse_stations(f'{CSV_PREFIX}-01.csv')
+        display_table(networks, clients)
+
+    # Cleanup process
+    if SCANNER_PROCESS:
+        SCANNER_PROCESS.terminate()
+        time.sleep(1)
+        if SCANNER_PROCESS.poll() is None:
+            SCANNER_PROCESS.kill()
+        SCANNER_PROCESS = None
 
 # ============================================
 # MAIN
@@ -392,10 +379,9 @@ def main():
             sys.exit(0)
 
     # Start scanner
-    scanner = RealtimeScanner(monitor_adapter)
-    scanner.scan()
+    start_scanner(monitor_adapter)
 
-    # After scan finishes, cleanup
+    # After scanning
     print("\n" + "="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
     if cleanup_choice.lower() == 'y':
