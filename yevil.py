@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Live WiFi Scanner (Single Unified Table using Rich)
+Yevil - Live WiFi Scanner (Single Unified Table with Screen Clear)
 """
 
 import os
@@ -13,7 +13,6 @@ from collections import defaultdict
 
 # Rich Library Imports
 from rich.console import Console
-from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
@@ -171,12 +170,11 @@ def parse_stations(csv_file):
     return clients
 
 # ============================================
-# RICH TABLE GENERATOR (Single Unified Table)
+# RICH TABLE GENERATOR
 # ============================================
 
 def generate_table(networks, clients):
     """Generate a single Rich Table object."""
-    # Sort by signal strength
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -198,7 +196,6 @@ def generate_table(networks, clients):
     table.add_column("CLIENTS", justify="center")
 
     for idx, net in enumerate(networks_sorted, 1):
-        # Determine color based on signal strength
         try:
             pwr = int(net['power'])
             if pwr > -50:
@@ -233,7 +230,7 @@ def generate_table(networks, clients):
     return table
 
 # ============================================
-# SCANNER LOOP (Uses Rich Live to update in-place)
+# SCANNER LOOP (FIXED: Uses Screen update instead of Live)
 # ============================================
 
 def start_scanner(adapter):
@@ -264,41 +261,37 @@ def start_scanner(adapter):
         console.print(f"[red][-] Failed to start scanner: {e}[/red]")
         return
 
-    # Wait for first CSV
-    time.sleep(2)
+    time.sleep(2) # Wait for first CSV
 
     last_networks = []
     last_clients = {}
 
-    # Use Rich Live to handle the single-table updates
-    try:
-        with Live(refresh_per_second=1, console=console) as live:
-            while not STOP_SCANNING:
-                time.sleep(0.5)
-                csv_file = f'{CSV_PREFIX}-01.csv'
-                if not os.path.exists(csv_file):
-                    continue
+    # FIXED: Using console.screen() replaces the entire screen on update
+    # Guaranteeing that previous tables will NEVER stack
+    with console.screen() as screen:
+        while not STOP_SCANNING:
+            time.sleep(0.5)
+            csv_file = f'{CSV_PREFIX}-01.csv'
+            if not os.path.exists(csv_file):
+                continue
 
-                networks = parse_networks(csv_file)
-                clients = parse_stations(csv_file)
+            networks = parse_networks(csv_file)
+            clients = parse_stations(csv_file)
 
-                # Only update the table if data actually changed
-                if networks != last_networks or clients != last_clients:
-                    table = generate_table(networks, clients)
-                    live.update(table)
-                    last_networks = networks
-                    last_clients = clients
+            # Only update if data changed
+            if networks != last_networks or clients != last_clients:
+                table = generate_table(networks, clients)
+                screen.update(table) # Replaces the previous screen exactly
+                last_networks = networks
+                last_clients = clients
 
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Cleanup process
-        if SCANNER_PROCESS:
-            SCANNER_PROCESS.terminate()
-            time.sleep(1)
-            if SCANNER_PROCESS.poll() is None:
-                SCANNER_PROCESS.kill()
-            SCANNER_PROCESS = None
+    # Cleanup process
+    if SCANNER_PROCESS:
+        SCANNER_PROCESS.terminate()
+        time.sleep(1)
+        if SCANNER_PROCESS.poll() is None:
+            SCANNER_PROCESS.kill()
+        SCANNER_PROCESS = None
 
 # ============================================
 # MAIN
