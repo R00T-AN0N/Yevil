@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Live WiFi Scanner (curses TUI engine - Wifite style)
+Yevil - Live WiFi Scanner (curses TUI with final result printing)
 """
 
 import os
@@ -66,7 +66,6 @@ def cleanup():
 
 def signal_handler(sig, frame):
     global STOP_SCANNING
-    # We only set the flag here. The main curses loop will break cleanly and restore the terminal.
     STOP_SCANNING = True
 
 # ============================================
@@ -136,7 +135,6 @@ def parse_networks(csv_file):
                     'cipher': row[6],
                     'authentication': row[7],
                     'power': row[8],
-                    'beacons': row[9],
                     'ssid': row[13].strip() if len(row) > 13 and row[13].strip() else '<Hidden>'
                 })
     except:
@@ -149,7 +147,7 @@ def parse_stations(csv_file):
         with open(csv_file, 'r') as f:
             reader = csv.reader(f)
             for row in reader:
-                if len(row) < 8:
+                if len(row) < 6:
                     continue
                 if row[0] == 'Station MAC':
                     continue
@@ -161,38 +159,45 @@ def parse_stations(csv_file):
     return clients
 
 # ============================================
-# CURSES UI DRAWING ENGINE (Wifite-style Responsive)
+# CURSES UI DRAWING ENGINE (Resilient to resizing)
 # ============================================
 
+def write(stdscr, y, x, text, color):
+    """Safely writes text to a specific coordinate without crashing on overflow."""
+    h, w = stdscr.getmaxyx()
+    if y < 0 or y >= h or x < 0 or x >= w:
+        return
+    max_len = w - x
+    if max_len <= 0:
+        return
+    try:
+        stdscr.addstr(y, x, text[:max_len], color)
+    except curses.error:
+        pass
+
 def draw_ui(stdscr, networks, clients):
-    # Get current terminal dimensions
+    # Get terminal dimensions
     height, width = stdscr.getmaxyx()
     stdscr.clear()
 
-    # Define color pairs for curses
+    # Define colors
     curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)   # Strong signal
     curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Medium signal
     curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)     # Weak signal / Hidden
-    curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)    # Titles / Channels
+    curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)    # Titles
     curses.init_pair(5, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # BSSID
-    curses.init_pair(6, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Headers / Footers
-    curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_BLACK)   # Standard text
+    curses.init_pair(6, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Headers
+    curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_BLACK)   # Normal text
 
-    # --- 1. Title ---
+    # 1. Title
     title = f"YEVIL - Real-Time WiFi Scanner (Networks found: {len(networks)})"
-    try:
-        stdscr.addstr(0, max(0, (width - len(title)) // 2), title, curses.color_pair(4) | curses.A_BOLD)
-    except:
-        pass
+    write(stdscr, 0, max(0, (width - len(title)) // 2), title, curses.color_pair(4) | curses.A_BOLD)
 
-    # --- 2. Headers (Automatically truncated by curses/width to prevent wrapping) ---
+    # 2. Headers
     header = f"{'#':<4} {'ESSID':<30} {'BSSID':<17} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
-    try:
-        stdscr.addstr(1, 0, header[:width-1], curses.color_pair(6) | curses.A_BOLD)
-    except:
-        pass
+    write(stdscr, 1, 0, header, curses.color_pair(6) | curses.A_BOLD)
 
-    # --- 3. Data Rows ---
+    # 3. Data Sorting
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -200,76 +205,53 @@ def draw_ui(stdscr, networks, clients):
     except:
         networks_sorted = networks
 
+    # Create uppercase mapping for BSSIDs to avoid case mismatch
+    clients_bssid_upper = {k.upper(): v for k, v in clients.items()}
+
     row_y = 2
     for idx, net in enumerate(networks_sorted, 1):
         if row_y >= height - 1:
             break
 
-        # Determine power color
         pwr_val = net['power']
         try:
             pwr = int(pwr_val)
-            if pwr > -50: pwr_color = 1
-            elif pwr > -65: pwr_color = 2
-            else: pwr_color = 3
+            pwr_color = 1 if pwr > -50 else (2 if pwr > -65 else 3)
         except:
             pwr_color = 7
 
-        # Determine SSID color
         ssid = net['ssid']
-        is_hidden = ssid == '<Hidden>'
-        ssid_color = 3 if is_hidden else 4
+        ssid_color = 3 if ssid == '<Hidden>' else 4
 
-        # Write each column individually, strictly truncating to prevent screen overflow
+        # Safely write each column respecting terminal width
         x = 0
-        try: stdscr.addstr(row_y, x, f"{idx:<4}", curses.color_pair(1))
-        except: pass
+        write(stdscr, row_y, x, f"{idx:<4}", curses.color_pair(1))
         x += 4
-
-        try: stdscr.addstr(row_y, x, f"{ssid[:30]:<30}"[:width - x - 1], curses.color_pair(ssid_color))
-        except: pass
+        write(stdscr, row_y, x, f"{ssid:<30}", curses.color_pair(ssid_color))
         x += 30
-
-        try: stdscr.addstr(row_y, x, f"{net['bssid']:<17}"[:width - x - 1], curses.color_pair(5))
-        except: pass
+        write(stdscr, row_y, x, f"{net['bssid']:<17}", curses.color_pair(5))
         x += 17
-
-        try: stdscr.addstr(row_y, x, f"{net['channel']:<4}", curses.color_pair(4))
-        except: pass
+        write(stdscr, row_y, x, f"{net['channel']:<4}", curses.color_pair(4))
         x += 4
-
-        try: stdscr.addstr(row_y, x, f"{pwr_val:<6}", curses.color_pair(pwr_color))
-        except: pass
+        write(stdscr, row_y, x, f"{pwr_val:<6}", curses.color_pair(pwr_color))
         x += 6
-
-        try: stdscr.addstr(row_y, x, f"{net['privacy']:<8}", curses.color_pair(7))
-        except: pass
+        write(stdscr, row_y, x, f"{net['privacy']:<8}", curses.color_pair(7))
         x += 8
-
-        try: stdscr.addstr(row_y, x, f"{net['cipher']:<8}", curses.color_pair(7))
-        except: pass
+        write(stdscr, row_y, x, f"{net['cipher']:<8}", curses.color_pair(7))
         x += 8
-
-        try: stdscr.addstr(row_y, x, f"{net['authentication']:<10}", curses.color_pair(7))
-        except: pass
+        write(stdscr, row_y, x, f"{net['authentication']:<10}", curses.color_pair(7))
         x += 10
-
-        try: stdscr.addstr(row_y, x, f"{clients.get(net['bssid'], 0):<6}", curses.color_pair(1))
-        except: pass
+        write(stdscr, row_y, x, f"{clients_bssid_upper.get(net['bssid'].upper(), 0):<6}", curses.color_pair(1))
 
         row_y += 1
 
-    # --- 4. Footer ---
-    footer = "Press Ctrl+C to stop scanning"
-    try:
-        stdscr.addstr(height-1, max(0, (width - len(footer)) // 2), footer, curses.color_pair(6) | curses.A_BLINK)
-    except:
-        pass
-    
+    # 4. Footer
+    footer = "Press Ctrl+C or 'q' to stop scanning"
+    write(stdscr, height-1, max(0, (width - len(footer)) // 2), footer, curses.color_pair(6) | curses.A_BLINK)
     stdscr.refresh()
 
 # ============================================
-# SCANNER LOOP (curses wrapper engine)
+# SCANNER LOOP (returns data for final print)
 # ============================================
 
 def start_scanner(stdscr, adapter):
@@ -298,20 +280,17 @@ def start_scanner(stdscr, adapter):
                                            stderr=subprocess.DEVNULL)
     except Exception as e:
         print(f"[-] Failed to start scanner: {e}")
-        return
+        return [], {}
 
-    # Wait for first CSV
     time.sleep(2)
 
     last_networks = []
-    last_clients = {}
+    last_clients = defaultdict(int)
 
-    # Set terminal to non-blocking getch
     stdscr.nodelay(1)
-    stdscr.timeout(500) # Check every 500ms for keyboard input
-    
+    stdscr.timeout(500)
+
     while not STOP_SCANNING:
-        # Check for explicit 'q' quit, but keep Ctrl+C as the primary exit
         key = stdscr.getch()
         if key == ord('q') or key == ord('Q'):
             STOP_SCANNING = True
@@ -319,7 +298,6 @@ def start_scanner(stdscr, adapter):
 
         csv_file = f'{CSV_PREFIX}-01.csv'
         if not os.path.exists(csv_file):
-            # Briefly wait until airodump writes the file
             time.sleep(0.1)
             continue
 
@@ -330,6 +308,24 @@ def start_scanner(stdscr, adapter):
             draw_ui(stdscr, networks, clients)
             last_networks = networks
             last_clients = clients
+
+    # Kill the airodump process
+    if SCANNER_PROCESS:
+        SCANNER_PROCESS.terminate()
+        time.sleep(0.5)
+        if SCANNER_PROCESS.poll() is None:
+            SCANNER_PROCESS.kill()
+        SCANNER_PROCESS = None
+
+    # PAUSE SO THE USER CAN READ THE FINAL TABLE
+    height, width = stdscr.getmaxyx()
+    stdscr.nodelay(0)
+    msg = "Scan complete. Press ANY KEY to return to the terminal with results..."
+    write(stdscr, height-1, max(0, (width - len(msg)) // 2), msg, curses.color_pair(6) | curses.A_BLINK)
+    stdscr.refresh()
+    stdscr.getch()
+
+    return last_networks, last_clients
 
 # ============================================
 # MAIN
@@ -403,12 +399,43 @@ def main():
             print("[+] Exiting...")
             sys.exit(0)
 
-    # Run the curses engine inside a wrapper (guarantees 100% clean reset on exit)
-    try:
-        curses.wrapper(start_scanner, monitor_adapter)
-    except KeyboardInterrupt:
-        # If user presses Ctrl+C aggressively outside the loop, pass to our cleanup
-        pass
+    # Start curses
+    stdscr = curses.initscr()
+    curses.noecho()
+    curses.cbreak()
+    stdscr.keypad(True)
+    curses.start_color()
+
+    # Run the engine
+    networks, clients = start_scanner(stdscr, monitor_adapter)
+
+    # Clean up curses (this wipes the screen, but we save the data)
+    curses.nocbreak()
+    stdscr.keypad(False)
+    curses.echo()
+    curses.endwin()
+
+    # ==========================================
+    # PRINT FINAL RESULTS TO TERMINAL
+    # ==========================================
+    print("\n" + "="*50)
+    if networks:
+        print("\n[+] Final Scan Results:")
+        print("-" * 84)
+        print(f"{'#':<4} {'ESSID':<30} {'BSSID':<17} {'CH':<4} {'PWR':<6} {'CLIENTS':<6}")
+        print("-" * 84)
+        try:
+            networks_sorted = sorted(networks,
+                                     key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
+                                     reverse=True)
+        except:
+            networks_sorted = networks
+
+        for idx, net in enumerate(networks_sorted, 1):
+            client_count = clients.get(net['bssid'], 0)
+            print(f"{idx:<4} {net['ssid'][:30]:<30} {net['bssid']:<17} {net['channel']:<4} {net['power']:<6} {client_count:<6}")
+    else:
+        print("\n[!] No networks were found during the scan.")
 
     print("\n" + "="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
@@ -423,6 +450,11 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        print("\n\n[+] Ctrl+C detected. Cleaning up...")
+        cleanup()
+        print("[+] Goodbye!")
+        sys.exit(0)
     except Exception as e:
         print(f"\n[-] Error: {e}")
         cleanup()
