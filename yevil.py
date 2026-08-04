@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Live WiFi Scanner (Single Unified Table with Screen Clear)
+Yevil - Live WiFi Scanner (curses TUI engine - Wifite style)
 """
 
 import os
@@ -9,13 +9,8 @@ import subprocess
 import time
 import signal
 import csv
+import curses
 from collections import defaultdict
-
-# Rich Library Imports
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
 
 # ============================================
 # GLOBALS
@@ -25,7 +20,6 @@ MONITOR_INTERFACE = None
 SCANNER_PROCESS = None
 STOP_SCANNING = False
 CSV_PREFIX = '/tmp/yevil_scan'
-console = Console()
 
 # ============================================
 # CLEANUP
@@ -33,7 +27,7 @@ console = Console()
 
 def cleanup():
     global MONITOR_INTERFACE, SCANNER_PROCESS
-    console.print("\n[bold yellow][+] Cleaning up...[/bold yellow]")
+    print("\n[+] Cleaning up...")
     if SCANNER_PROCESS:
         try:
             SCANNER_PROCESS.terminate()
@@ -59,31 +53,28 @@ def cleanup():
                            capture_output=True, check=False)
             subprocess.run(['sudo', 'ip', 'link', 'set', MONITOR_INTERFACE, 'up'],
                            capture_output=True, check=False)
-            console.print(f"[green][+] {MONITOR_INTERFACE} reset to managed mode[/green]")
+            print(f"[+] {MONITOR_INTERFACE} reset to managed mode")
         except:
             pass
         try:
             subprocess.run(['sudo', 'systemctl', 'restart', 'NetworkManager'],
                            capture_output=True, check=False)
-            console.print("[green][+] NetworkManager restarted[/green]")
+            print("[+] NetworkManager restarted")
         except:
             pass
-    console.print("[green][+] Cleanup complete![/green]")
+    print("[+] Cleanup complete!")
 
 def signal_handler(sig, frame):
     global STOP_SCANNING
-    print("\n[!] Ctrl+C detected")
+    # We only set the flag here. The main curses loop will break cleanly and restore the terminal.
     STOP_SCANNING = True
-    cleanup()
-    print("\n[+] Goodbye!")
-    sys.exit(0)
 
 # ============================================
 # ADAPTER FUNCTIONS
 # ============================================
 
 def detect_adapters():
-    console.print("\n[bold cyan][+] Detecting wireless adapters...[/bold cyan]")
+    print("\n[+] Detecting wireless adapters...")
     adapters = []
     try:
         result = subprocess.run(['iwconfig'], capture_output=True, text=True)
@@ -98,7 +89,7 @@ def detect_adapters():
 
 def set_monitor_mode(adapter):
     global MONITOR_INTERFACE
-    console.print(f"\n[bold cyan][+] Setting {adapter} to monitor mode...[/bold cyan]")
+    print(f"\n[+] Setting {adapter} to monitor mode...")
     try:
         subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'],
                        capture_output=True, text=True)
@@ -112,13 +103,13 @@ def set_monitor_mode(adapter):
         MONITOR_INTERFACE = adapter
         result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
         if 'Mode:Monitor' in result.stdout:
-            console.print(f"[green][+] ✅ {adapter} is now in MONITOR MODE![/green]")
+            print(f"[+] ✅ {adapter} is now in MONITOR MODE!")
             return True
         else:
-            console.print("[red][!] Monitor mode not verified![/red]")
+            print("[!] Monitor mode not verified!")
             return False
     except Exception as e:
-        console.print(f"[red][-] Failed: {e}[/red]")
+        print(f"[-] Failed: {e}")
         return False
 
 # ============================================
@@ -170,11 +161,38 @@ def parse_stations(csv_file):
     return clients
 
 # ============================================
-# RICH TABLE GENERATOR
+# CURSES UI DRAWING ENGINE (Wifite-style Responsive)
 # ============================================
 
-def generate_table(networks, clients):
-    """Generate a single Rich Table object."""
+def draw_ui(stdscr, networks, clients):
+    # Get current terminal dimensions
+    height, width = stdscr.getmaxyx()
+    stdscr.clear()
+
+    # Define color pairs for curses
+    curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)   # Strong signal
+    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Medium signal
+    curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)     # Weak signal / Hidden
+    curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)    # Titles / Channels
+    curses.init_pair(5, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # BSSID
+    curses.init_pair(6, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Headers / Footers
+    curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_BLACK)   # Standard text
+
+    # --- 1. Title ---
+    title = f"YEVIL - Real-Time WiFi Scanner (Networks found: {len(networks)})"
+    try:
+        stdscr.addstr(0, max(0, (width - len(title)) // 2), title, curses.color_pair(4) | curses.A_BOLD)
+    except:
+        pass
+
+    # --- 2. Headers (Automatically truncated by curses/width to prevent wrapping) ---
+    header = f"{'#':<4} {'ESSID':<30} {'BSSID':<17} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
+    try:
+        stdscr.addstr(1, 0, header[:width-1], curses.color_pair(6) | curses.A_BOLD)
+    except:
+        pass
+
+    # --- 3. Data Rows ---
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -182,58 +200,79 @@ def generate_table(networks, clients):
     except:
         networks_sorted = networks
 
-    table = Table(title=f"YEVIL - Real-Time WiFi Scanner (Networks found: {len(networks)})",
-                  style="bold cyan", expand=True)
-    
-    table.add_column("#", justify="right", style="bold yellow")
-    table.add_column("ESSID", style="cyan", no_wrap=False)
-    table.add_column("BSSID", style="magenta")
-    table.add_column("CH", justify="center")
-    table.add_column("PWR", justify="right")
-    table.add_column("ENC", justify="center")
-    table.add_column("CIPHER", justify="center")
-    table.add_column("AUTH", justify="center")
-    table.add_column("CLIENTS", justify="center")
-
+    row_y = 2
     for idx, net in enumerate(networks_sorted, 1):
+        if row_y >= height - 1:
+            break
+
+        # Determine power color
+        pwr_val = net['power']
         try:
-            pwr = int(net['power'])
-            if pwr > -50:
-                pwr_color = "green"
-            elif pwr > -65:
-                pwr_color = "yellow"
-            else:
-                pwr_color = "red"
+            pwr = int(pwr_val)
+            if pwr > -50: pwr_color = 1
+            elif pwr > -65: pwr_color = 2
+            else: pwr_color = 3
         except:
-            pwr_color = "white"
+            pwr_color = 7
 
+        # Determine SSID color
         ssid = net['ssid']
-        if ssid == '<Hidden>':
-            ssid = f"[bold red]<Hidden>[/bold red]"
-        
-        client_count = clients.get(net['bssid'], 0)
+        is_hidden = ssid == '<Hidden>'
+        ssid_color = 3 if is_hidden else 4
 
-        table.add_row(
-            str(idx),
-            ssid,
-            net['bssid'],
-            net['channel'],
-            f"[{pwr_color}]{net['power']}[/{pwr_color}]",
-            net['privacy'],
-            net['cipher'],
-            net['authentication'],
-            str(client_count)
-        )
+        # Write each column individually, strictly truncating to prevent screen overflow
+        x = 0
+        try: stdscr.addstr(row_y, x, f"{idx:<4}", curses.color_pair(1))
+        except: pass
+        x += 4
 
-    table.caption = "Press Ctrl+C to stop scanning | Auto-refreshes every 1 second"
-    table.caption_style = "blink bold yellow"
-    return table
+        try: stdscr.addstr(row_y, x, f"{ssid[:30]:<30}"[:width - x - 1], curses.color_pair(ssid_color))
+        except: pass
+        x += 30
+
+        try: stdscr.addstr(row_y, x, f"{net['bssid']:<17}"[:width - x - 1], curses.color_pair(5))
+        except: pass
+        x += 17
+
+        try: stdscr.addstr(row_y, x, f"{net['channel']:<4}", curses.color_pair(4))
+        except: pass
+        x += 4
+
+        try: stdscr.addstr(row_y, x, f"{pwr_val:<6}", curses.color_pair(pwr_color))
+        except: pass
+        x += 6
+
+        try: stdscr.addstr(row_y, x, f"{net['privacy']:<8}", curses.color_pair(7))
+        except: pass
+        x += 8
+
+        try: stdscr.addstr(row_y, x, f"{net['cipher']:<8}", curses.color_pair(7))
+        except: pass
+        x += 8
+
+        try: stdscr.addstr(row_y, x, f"{net['authentication']:<10}", curses.color_pair(7))
+        except: pass
+        x += 10
+
+        try: stdscr.addstr(row_y, x, f"{clients.get(net['bssid'], 0):<6}", curses.color_pair(1))
+        except: pass
+
+        row_y += 1
+
+    # --- 4. Footer ---
+    footer = "Press Ctrl+C to stop scanning"
+    try:
+        stdscr.addstr(height-1, max(0, (width - len(footer)) // 2), footer, curses.color_pair(6) | curses.A_BLINK)
+    except:
+        pass
+    
+    stdscr.refresh()
 
 # ============================================
-# SCANNER LOOP (FIXED: Uses Screen update instead of Live)
+# SCANNER LOOP (curses wrapper engine)
 # ============================================
 
-def start_scanner(adapter):
+def start_scanner(stdscr, adapter):
     global SCANNER_PROCESS, STOP_SCANNING
 
     # Clean old CSVs
@@ -249,8 +288,8 @@ def start_scanner(adapter):
            '--write', CSV_PREFIX,
            '--write-interval', '1']
     
-    console.print(f"\n[bold green][+] Running: {' '.join(cmd)}[/bold green]")
-    console.print("[yellow][+] Starting real-time UI...[/yellow]")
+    print(f"\n[+] Running: {' '.join(cmd)}")
+    print("[+] Starting real-time UI...")
     time.sleep(1)
 
     try:
@@ -258,40 +297,39 @@ def start_scanner(adapter):
                                            stdout=subprocess.DEVNULL,
                                            stderr=subprocess.DEVNULL)
     except Exception as e:
-        console.print(f"[red][-] Failed to start scanner: {e}[/red]")
+        print(f"[-] Failed to start scanner: {e}")
         return
 
-    time.sleep(2) # Wait for first CSV
+    # Wait for first CSV
+    time.sleep(2)
 
     last_networks = []
     last_clients = {}
 
-    # FIXED: Using console.screen() replaces the entire screen on update
-    # Guaranteeing that previous tables will NEVER stack
-    with console.screen() as screen:
-        while not STOP_SCANNING:
-            time.sleep(0.5)
-            csv_file = f'{CSV_PREFIX}-01.csv'
-            if not os.path.exists(csv_file):
-                continue
+    # Set terminal to non-blocking getch
+    stdscr.nodelay(1)
+    stdscr.timeout(500) # Check every 500ms for keyboard input
+    
+    while not STOP_SCANNING:
+        # Check for explicit 'q' quit, but keep Ctrl+C as the primary exit
+        key = stdscr.getch()
+        if key == ord('q') or key == ord('Q'):
+            STOP_SCANNING = True
+            break
 
-            networks = parse_networks(csv_file)
-            clients = parse_stations(csv_file)
+        csv_file = f'{CSV_PREFIX}-01.csv'
+        if not os.path.exists(csv_file):
+            # Briefly wait until airodump writes the file
+            time.sleep(0.1)
+            continue
 
-            # Only update if data changed
-            if networks != last_networks or clients != last_clients:
-                table = generate_table(networks, clients)
-                screen.update(table) # Replaces the previous screen exactly
-                last_networks = networks
-                last_clients = clients
+        networks = parse_networks(csv_file)
+        clients = parse_stations(csv_file)
 
-    # Cleanup process
-    if SCANNER_PROCESS:
-        SCANNER_PROCESS.terminate()
-        time.sleep(1)
-        if SCANNER_PROCESS.poll() is None:
-            SCANNER_PROCESS.kill()
-        SCANNER_PROCESS = None
+        if networks != last_networks or clients != last_clients:
+            draw_ui(stdscr, networks, clients)
+            last_networks = networks
+            last_clients = clients
 
 # ============================================
 # MAIN
@@ -300,26 +338,38 @@ def start_scanner(adapter):
 def main():
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Welcome Banner
-    console.print(Panel.fit(
-        "[bold cyan]YEVIL - WiFi Security Testing Tool v2.0.0\n"
-        "[yellow]⚠️  For Educational Purposes Only![/yellow]",
-        border_style="cyan"
-    ))
+    print("""
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║    ██╗   ██╗███████╗██╗   ██╗██╗██╗                          ║
+║    ╚██╗ ██╔╝██╔════╝██║   ██║██║██║                          ║
+║     ╚████╔╝ █████╗  ██║   ██║██║██║                          ║
+║      ╚██╔╝  ██╔══╝  ╚██╗ ██╔╝██║██║                          ║
+║       ██║   ███████╗ ╚████╔╝ ██║███████╗                     ║
+║       ╚═╝   ╚══════╝  ╚═══╝  ╚═╝╚══════╝                     ║
+║                                                               ║
+║           WiFi Security Testing Tool (curses TUI)             ║
+║           ⚠️  For Educational Purposes Only!                  ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+""")
+    print("[+] Yevil - WiFi Security Testing Tool")
+    print("[+] For Educational Purposes Only!")
+    print("="*50)
 
     if os.geteuid() != 0:
-        console.print("[bold red][!] This tool requires root privileges![/bold red]")
-        console.print("[yellow][!] Please run with: sudo python3 yevil.py[/yellow]")
+        print("[!] This tool requires root privileges!")
+        print("[!] Please run with: sudo python3 yevil.py")
         sys.exit(1)
 
     adapters = detect_adapters()
     if not adapters:
-        console.print("\n[bold red][!] No wireless adapters detected![/bold red]")
+        print("\n[!] No wireless adapters detected!")
         sys.exit(1)
 
-    console.print("\n[bold cyan]📋 Detected Adapters:[/bold cyan]")
+    print("\n[+] Detected Adapters:")
     for i, adapter in enumerate(adapters, 1):
-        console.print(f"   {i}. {adapter}")
+        print(f"   {i}. {adapter}")
 
     print()
     while True:
@@ -331,50 +381,49 @@ def main():
                 break
         except:
             pass
-        console.print("[red][-] Invalid selection![/red]")
+        print("[-] Invalid selection!")
 
-    console.print(f"\n[green][+] Selected: {selected}[/green]")
+    print(f"\n[+] Selected: {selected}")
 
     # Check mode
     result = subprocess.run(['iwconfig', selected], capture_output=True, text=True)
     if 'Mode:Monitor' in result.stdout:
-        console.print("[green][+] Already in monitor mode[/green]")
+        print("[+] Already in monitor mode")
         monitor_adapter = selected
     else:
-        console.print("[yellow][!] Adapter is not in monitor mode![/yellow]")
+        print("[!] Adapter is not in monitor mode!")
         set_mon = input("\n[?] Set monitor mode now? (y/n): ")
         if set_mon.lower() == 'y':
             if set_monitor_mode(selected):
                 monitor_adapter = selected
             else:
-                console.print("[red][!] Failed to set monitor mode![/red]")
+                print("[!] Failed to set monitor mode!")
                 sys.exit(1)
         else:
-            console.print("[yellow][+] Exiting...[/yellow]")
+            print("[+] Exiting...")
             sys.exit(0)
 
-    start_scanner(monitor_adapter)
+    # Run the curses engine inside a wrapper (guarantees 100% clean reset on exit)
+    try:
+        curses.wrapper(start_scanner, monitor_adapter)
+    except KeyboardInterrupt:
+        # If user presses Ctrl+C aggressively outside the loop, pass to our cleanup
+        pass
 
-    # Post-scan cleanup
     print("\n" + "="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
     if cleanup_choice.lower() == 'y':
         cleanup()
     else:
-        console.print("[yellow][+] Adapter remains in monitor mode[/yellow]")
-        console.print(f"[yellow][+] Manual cleanup: sudo ip link set {monitor_adapter} down && sudo iw dev {monitor_adapter} set type managed && sudo ip link set {monitor_adapter} up[/yellow]")
+        print("[+] Adapter remains in monitor mode")
+        print(f"[+] Manual cleanup: sudo ip link set {monitor_adapter} down && sudo iw dev {monitor_adapter} set type managed && sudo ip link set {monitor_adapter} up")
 
-    console.print("\n[bold green][+] Done![/bold green]")
+    print("\n[+] Done!")
 
 if __name__ == "__main__":
     try:
         main()
-    except KeyboardInterrupt:
-        console.print("\n\n[bold yellow][+] Ctrl+C detected. Cleaning up...[/bold yellow]")
-        cleanup()
-        console.print("[bold cyan][+] Goodbye![/bold cyan]")
-        sys.exit(0)
     except Exception as e:
-        console.print(f"\n[bold red][-] Error: {e}[/bold red]")
+        print(f"\n[-] Error: {e}")
         cleanup()
         sys.exit(1)
