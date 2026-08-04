@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Live WiFi Scanner (ANSI TUI - Preserves scrollback)
+Yevil - Live WiFi Scanner (Flawless Overwrite Engine)
 """
 
 import os
@@ -11,16 +11,9 @@ import signal
 import csv
 import select
 import shutil
+import math
+import re
 from collections import defaultdict
-
-# ============================================
-# GLOBALS
-# ============================================
-
-MONITOR_INTERFACE = None
-SCANNER_PROCESS = None
-STOP_SCANNING = False
-CSV_PREFIX = '/tmp/yevil_scan'
 
 # ============================================
 # ANSI COLORS
@@ -35,6 +28,15 @@ CYAN = '\033[96m'
 WHITE = '\033[97m'
 BOLD = '\033[1m'
 RESET = '\033[0m'
+
+# ============================================
+# GLOBALS
+# ============================================
+
+MONITOR_INTERFACE = None
+SCANNER_PROCESS = None
+STOP_SCANNING = False
+CSV_PREFIX = '/tmp/yevil_scan'
 
 # ============================================
 # CLEANUP
@@ -168,17 +170,25 @@ def parse_stations(csv_file):
                     continue
                 bssid = row[5].strip()
                 if bssid:
-                    clients[bssid] += 1
+                    clients[bssid.upper()] += 1
     except:
         pass
     return clients
 
 # ============================================
-# ANSI TABLE DRAWING ENGINE (Preserves terminal scrollback)
+# BULLETPROOF TABLE BUILDER (No terminal wrapping)
 # ============================================
 
-def draw_table(networks, clients, width):
-    # Sort networks by signal strength
+def safe_truncate(text, max_len):
+    """Truncates text to ensure it stays under max_len, avoiding terminal wraps."""
+    clean_text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+    if len(clean_text) <= max_len:
+        return text
+    # Since ESSID is plain text (unless Hidden), this safe slice works beautifully
+    return text[:max_len-3] + "..."
+
+def build_table(networks, clients, term_width):
+    # Sort by signal strength
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -186,42 +196,26 @@ def draw_table(networks, clients, width):
     except:
         networks_sorted = networks
 
-    # Uppercase BSSIDs for client matching
-    clients_upper = {k.upper(): v for k, v in clients.items()}
-
-    # Calculate dynamic ESSID width to prevent line wrapping
-    essid_width = 30
-    base_width = 4 + essid_width + 17 + 4 + 6 + 8 + 8 + 10 + 6 # 93 total
-    if width < base_width:
-        essid_width = max(10, essid_width - (base_width - width))
+    # Fixed character column widths (including spaces)
+    FIXED_WIDTH = 4 + 1 + 17 + 1 + 4 + 1 + 6 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 6 # 71 chars
+    essid_width = max(5, term_width - FIXED_WIDTH - 3) # Adjust for breathing room
 
     lines = []
+    
+    # 1. Title
+    title = f"{CYAN}YEVIL - Real-Time WiFi Scanner (Networks found: {len(networks)}){RESET}"
+    lines.append(title)
 
-    # 1. Empty state
-    if not networks_sorted:
-        lines.append(f"{CYAN}YEVIL - Real-Time WiFi Scanner (Scanning...){RESET}")
-        lines.append("")
-        lines.append(f"{WHITE}Waiting for access points...{RESET}")
-        lines.append("")
-        lines.append(f"{BOLD}{YELLOW}Press 'q' to stop scanning and show results{RESET}")
-        return lines
+    # 2. Headers (Using a manual space calculation so columns align perfectly)
+    header = f"{BOLD}{YELLOW}{'#':<4} {'ESSID':<{essid_width}} {'BSSID':<17} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}{RESET}"
+    lines.append(header)
 
-    # 2. Title
-    title = f"YEVIL - Real-Time WiFi Scanner (Networks found: {len(networks)})"
-    lines.append(f"{CYAN}{title}{RESET}")
-
-    # 3. Headers
-    header = f"{'#':<4} {'ESSID':<{essid_width}} {'BSSID':<17} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
-    lines.append(f"{BOLD}{YELLOW}{header}{RESET}")
-
-    # 4. Data
+    # 3. Rows
     for idx, net in enumerate(networks_sorted, 1):
         pwr_val = net['power']
         try:
             pwr = int(pwr_val)
-            if pwr > -50: pwr_color = GREEN
-            elif pwr > -65: pwr_color = YELLOW
-            else: pwr_color = RED
+            pwr_color = GREEN if pwr > -50 else YELLOW if pwr > -65 else RED
         except:
             pwr_color = WHITE
 
@@ -230,14 +224,13 @@ def draw_table(networks, clients, width):
             ssid_display = f"{RED}{ssid}{RESET}"
         else:
             ssid_display = ssid
+        
+        # Safe truncation prevents terminal wrapping at ANY terminal width
+        ssid_display = safe_truncate(ssid_display, essid_width)
 
-        # Truncate ESSID strictly
-        if len(ssid_display) > essid_width:
-            ssid_display = ssid_display[:essid_width-3] + "..."
+        client_count = clients.get(net['bssid'].upper(), 0)
 
-        client_count = clients_upper.get(net['bssid'].upper(), 0)
-
-        row = (f"{idx:<4} "
+        row = (f"{GREEN}{idx:<4}{RESET} "
                f"{ssid_display:<{essid_width}} "
                f"{MAGENTA}{net['bssid']:<17}{RESET} "
                f"{CYAN}{net['channel']:<4}{RESET} "
@@ -247,29 +240,54 @@ def draw_table(networks, clients, width):
                f"{WHITE}{net['authentication']:<10}{RESET} "
                f"{GREEN}{client_count:<6}{RESET}")
         
-        # Prevent entire row from wrapping
-        lines.append(row[:width])
+        lines.append(row)
 
-    # 5. Footer
-    footer = f"Press 'q' to stop scanning and show results"
-    lines.append(f"{BOLD}{YELLOW}{footer}{RESET}")
+    # 4. Footer
+    footer = f"{BOLD}{YELLOW}Press 'q' to stop scanning and show results{RESET}"
+    lines.append(footer)
 
     return lines
 
 # ============================================
-# SCANNER LOOP (Pure ANSI - No curses)
+# FLAWLESS OVERWRITE LOGIC (No Clear Screen)
+# ============================================
+
+def update_display(old_lines, new_lines):
+    """Replaces old lines with new lines in-place, leaving zero artifacts."""
+    if not old_lines:
+        sys.stdout.write('\n'.join(new_lines) + '\n')
+        sys.stdout.flush()
+        return
+
+    # Move cursor up the exact number of lines printed previously
+    sys.stdout.write(f'\033[{len(old_lines)}A')
+
+    # Write new lines and clear trailing old lines
+    max_len = max(len(old_lines), len(new_lines))
+    for i in range(max_len):
+        sys.stdout.write('\033[2K')  # Erase entire current line
+        
+        if i < len(new_lines):
+            sys.stdout.write(new_lines[i])
+        else:
+            sys.stdout.write('') # Write blank to clear the old line completely
+
+        if i < max_len - 1:
+            sys.stdout.write('\n')
+    
+    sys.stdout.flush()
+
+# ============================================
+# SCANNER LOOP
 # ============================================
 
 def start_scanner(adapter):
     global SCANNER_PROCESS, STOP_SCANNING
 
-    # Clean old CSVs
     for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
         if os.path.exists(f):
-            try:
-                os.remove(f)
-            except:
-                pass
+            try: os.remove(f)
+            except: pass
 
     cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg',
            '--output-format', 'csv',
@@ -277,69 +295,60 @@ def start_scanner(adapter):
            '--write-interval', '1']
     
     print(f"\n[+] Running: {' '.join(cmd)}")
-    print("[+] Starting real-time UI (Scrollback preserved)...")
+    print("[+] Starting real-time UI (Preserves previous command history)...")
     time.sleep(1)
 
     try:
-        SCANNER_PROCESS = subprocess.Popen(cmd,
-                                           stdout=subprocess.DEVNULL,
-                                           stderr=subprocess.DEVNULL)
+        SCANNER_PROCESS = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         print(f"[-] Failed to start scanner: {e}")
         return
 
-    time.sleep(2)
+    time.sleep(2) # Wait for first CSV
 
     last_networks = []
     last_clients = defaultdict(int)
-    last_lines = []
+    old_lines = []
+    last_width = 0
+
+    # Set stdin to non-blocking for 'q' detection
+    import fcntl, termios
+    fd = sys.stdin.fileno()
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
     while not STOP_SCANNING:
-        # Non-blocking check for 'q' input
-        rlist, _, _ = select.select([sys.stdin], [], [], 0.5)
-        if rlist:
+        # Detect 'q' input
+        try:
             ch = sys.stdin.read(1)
             if ch.lower() == 'q':
                 STOP_SCANNING = True
                 break
+        except (BlockingIOError, ValueError):
+            pass
 
         csv_file = f'{CSV_PREFIX}-01.csv'
         if not os.path.exists(csv_file):
-            time.sleep(0.1)
+            time.sleep(0.2)
             continue
 
         networks = parse_networks(csv_file)
         clients = parse_stations(csv_file)
+        current_width = shutil.get_terminal_size().columns
 
-        if networks != last_networks or clients != last_clients:
-            width = shutil.get_terminal_size().columns
-            new_lines = draw_table(networks, clients, width)
+        if networks != last_networks or clients != last_clients or current_width != last_width:
+            new_lines = build_table(networks, clients, current_width)
+            
+            if new_lines != old_lines or current_width != last_width:
+                update_display(old_lines, new_lines)
+                old_lines = new_lines
+                last_width = current_width
+                last_networks = networks
+                last_clients = clients
+        
+        time.sleep(0.3)
 
-            if not last_lines:
-                # First time printing: Just print normally
-                sys.stdout.write('\n'.join(new_lines) + '\n')
-            else:
-                # Guaranteed overwrite engine (handles growing/shrinking tables without artifacts)
-                max_len = max(len(last_lines), len(new_lines))
-                
-                # Pad both lists to the exact same length
-                last_padded = last_lines + [''] * (max_len - len(last_lines))
-                new_padded = new_lines + [''] * (max_len - len(new_lines))
-
-                # Move up exactly max_len lines
-                sys.stdout.write(f"\033[{max_len}A")
-                # Overwrite the entire block, clearing each line to the end
-                for i, line in enumerate(new_padded):
-                    sys.stdout.write(line + "\033[K")
-                    if i < max_len - 1:
-                        sys.stdout.write("\n")
-
-            sys.stdout.flush()
-            last_networks = networks
-            last_clients = clients
-            last_lines = new_lines
-
-    # Kill scanner process
+    # Kill process
     if SCANNER_PROCESS:
         SCANNER_PROCESS.terminate()
         time.sleep(0.5)
@@ -364,7 +373,7 @@ def main():
 ║       ██║   ███████╗ ╚████╔╝ ██║███████╗                     ║
 ║       ╚═╝   ╚══════╝  ╚═══╝  ╚═╝╚══════╝                     ║
 ║                                                               ║
-║           WiFi Security Testing Tool (ANSI TUI)               ║
+║           WiFi Security Testing Tool                          ║
 ║           ⚠️  For Educational Purposes Only!                  ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -418,12 +427,12 @@ def main():
             print("[+] Exiting...")
             sys.exit(0)
 
-    # Start the scanner
+    # Start scan
     start_scanner(monitor_adapter)
 
-    # Because we did NOT clear the screen, the final table is already there!
-    # We just print the cleanup prompt directly underneath it.
-    print("\n" + "="*50)
+    # The table is already beautifully printed on the screen, so we just ask below it!
+    print() # Move cursor down to a fresh line
+    print("="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
     if cleanup_choice.lower() == 'y':
         cleanup()
