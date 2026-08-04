@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Live WiFi Scanner (updates in‑place, redraws only on change)
+Yevil - Live WiFi Scanner (Single Unified Table using Rich)
 """
 
 import os
@@ -11,47 +11,12 @@ import signal
 import csv
 from collections import defaultdict
 
-# ============================================
-# COLOURS
-# ============================================
-
-class Colors:
-    red = '\033[91m'
-    green = '\033[92m'
-    yellow = '\033[93m'
-    blue = '\033[94m'
-    cyan = '\033[96m'
-    white = '\033[97m'
-    reset = '\033[0m'
-    bold = '\033[1m'
-    clear = '\033[2J\033[H'
-
-    @staticmethod
-    def print_colored(text, color='white', bold=False):
-        style = Colors.bold if bold else ''
-        print(f"{style}{getattr(Colors, color, '')}{text}{Colors.reset}")
-
-# ============================================
-# BANNER
-# ============================================
-
-BANNER = f"""
-{Colors.cyan}
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║    ██╗   ██╗███████╗██╗   ██╗██╗██╗                          ║
-║    ╚██╗ ██╔╝██╔════╝██║   ██║██║██║                          ║
-║     ╚████╔╝ █████╗  ██║   ██║██║██║                          ║
-║      ╚██╔╝  ██╔══╝  ╚██╗ ██╔╝██║██║                          ║
-║       ██║   ███████╗ ╚████╔╝ ██║███████╗                     ║
-║       ╚═╝   ╚══════╝  ╚═══╝  ╚═╝╚══════╝                     ║
-║                                                               ║
-║           WiFi Security Testing Tool v2.0.0                   ║
-║           ⚠️  For Educational Purposes Only!                  ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
-{Colors.reset}
-"""
+# Rich Library Imports
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
 
 # ============================================
 # GLOBALS
@@ -61,6 +26,7 @@ MONITOR_INTERFACE = None
 SCANNER_PROCESS = None
 STOP_SCANNING = False
 CSV_PREFIX = '/tmp/yevil_scan'
+console = Console()
 
 # ============================================
 # CLEANUP
@@ -68,7 +34,7 @@ CSV_PREFIX = '/tmp/yevil_scan'
 
 def cleanup():
     global MONITOR_INTERFACE, SCANNER_PROCESS
-    print("\n[+] Cleaning up...")
+    console.print("\n[bold yellow][+] Cleaning up...[/bold yellow]")
     if SCANNER_PROCESS:
         try:
             SCANNER_PROCESS.terminate()
@@ -94,16 +60,16 @@ def cleanup():
                            capture_output=True, check=False)
             subprocess.run(['sudo', 'ip', 'link', 'set', MONITOR_INTERFACE, 'up'],
                            capture_output=True, check=False)
-            print(f"[+] {MONITOR_INTERFACE} reset to managed mode")
+            console.print(f"[green][+] {MONITOR_INTERFACE} reset to managed mode[/green]")
         except:
             pass
         try:
             subprocess.run(['sudo', 'systemctl', 'restart', 'NetworkManager'],
                            capture_output=True, check=False)
-            print("[+] NetworkManager restarted")
+            console.print("[green][+] NetworkManager restarted[/green]")
         except:
             pass
-    print("[+] Cleanup complete!")
+    console.print("[green][+] Cleanup complete![/green]")
 
 def signal_handler(sig, frame):
     global STOP_SCANNING
@@ -118,7 +84,7 @@ def signal_handler(sig, frame):
 # ============================================
 
 def detect_adapters():
-    print("\n[+] Detecting wireless adapters...")
+    console.print("\n[bold cyan][+] Detecting wireless adapters...[/bold cyan]")
     adapters = []
     try:
         result = subprocess.run(['iwconfig'], capture_output=True, text=True)
@@ -133,7 +99,7 @@ def detect_adapters():
 
 def set_monitor_mode(adapter):
     global MONITOR_INTERFACE
-    print(f"\n[+] Setting {adapter} to monitor mode...")
+    console.print(f"\n[bold cyan][+] Setting {adapter} to monitor mode...[/bold cyan]")
     try:
         subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'],
                        capture_output=True, text=True)
@@ -147,13 +113,13 @@ def set_monitor_mode(adapter):
         MONITOR_INTERFACE = adapter
         result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
         if 'Mode:Monitor' in result.stdout:
-            print(f"[+] ✅ {adapter} is now in MONITOR MODE!")
+            console.print(f"[green][+] ✅ {adapter} is now in MONITOR MODE![/green]")
             return True
         else:
-            print("[!] Monitor mode not verified!")
+            console.print("[red][!] Monitor mode not verified![/red]")
             return False
     except Exception as e:
-        print(f"[-] Failed: {e}")
+        console.print(f"[red][-] Failed: {e}[/red]")
         return False
 
 # ============================================
@@ -205,20 +171,11 @@ def parse_stations(csv_file):
     return clients
 
 # ============================================
-# DISPLAY
+# RICH TABLE GENERATOR (Single Unified Table)
 # ============================================
 
-def display_table(networks, clients):
-    """Print a colourful table.  Clears the screen once, then draws everything."""
-    if not networks:
-        sys.stdout.write(Colors.clear)
-        sys.stdout.flush()
-        print(f"{Colors.cyan}{'='*120}")
-        print(f"  YEVIL - Real-Time WiFi Scanner".center(120))
-        print(f"  Scanning for networks...".center(120))
-        print(f"{'='*120}{Colors.reset}")
-        return
-
+def generate_table(networks, clients):
+    """Generate a single Rich Table object."""
     # Sort by signal strength
     try:
         networks_sorted = sorted(networks,
@@ -227,42 +184,56 @@ def display_table(networks, clients):
     except:
         networks_sorted = networks
 
-    sys.stdout.write(Colors.clear)
-    sys.stdout.flush()
-
-    print(f"{Colors.cyan}{'='*120}")
-    print(f"  YEVIL - Real-Time WiFi Scanner".center(120))
-    print(f"  Networks found: {len(networks)}".center(120))
-    print(f"{'='*120}{Colors.reset}")
-
-    header = f"{Colors.bold}{Colors.yellow}"
-    header += f"{'#':<4} {'ESSID':<30} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
-    header += f"{Colors.reset}"
-    print(header)
-    print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
+    table = Table(title=f"YEVIL - Real-Time WiFi Scanner (Networks found: {len(networks)})",
+                  style="bold cyan", expand=True)
+    
+    table.add_column("#", justify="right", style="bold yellow")
+    table.add_column("ESSID", style="cyan", no_wrap=False)
+    table.add_column("BSSID", style="magenta")
+    table.add_column("CH", justify="center")
+    table.add_column("PWR", justify="right")
+    table.add_column("ENC", justify="center")
+    table.add_column("CIPHER", justify="center")
+    table.add_column("AUTH", justify="center")
+    table.add_column("CLIENTS", justify="center")
 
     for idx, net in enumerate(networks_sorted, 1):
+        # Determine color based on signal strength
         try:
             pwr = int(net['power'])
-            color = 'green' if pwr > -50 else 'yellow' if pwr > -65 else 'red'
+            if pwr > -50:
+                pwr_color = "green"
+            elif pwr > -65:
+                pwr_color = "yellow"
+            else:
+                pwr_color = "red"
         except:
-            color = 'white'
+            pwr_color = "white"
 
-        ssid = net['ssid'][:30] if len(net['ssid']) > 30 else net['ssid']
-        if ssid == '':
-            ssid = '<Hidden>'
+        ssid = net['ssid']
+        if ssid == '<Hidden>':
+            ssid = f"[bold red]<Hidden>[/bold red]"
+        
         client_count = clients.get(net['bssid'], 0)
 
-        row = f"{idx:<4} {ssid:<30} {net['bssid']:<18} {net['channel']:<4} "
-        row += f"{net['power']:<6} {net['privacy']:<8} {net['cipher']:<8} {net['authentication']:<10} {client_count:<6}"
-        Colors.print_colored(row, color)
+        table.add_row(
+            str(idx),
+            ssid,
+            net['bssid'],
+            net['channel'],
+            f"[{pwr_color}]{net['power']}[/{pwr_color}]",
+            net['privacy'],
+            net['cipher'],
+            net['authentication'],
+            str(client_count)
+        )
 
-    print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-    print(f"{Colors.white}Press Ctrl+C to stop scanning{Colors.reset}")
-    print(f"{Colors.cyan}{'='*120}{Colors.reset}")
+    table.caption = "Press Ctrl+C to stop scanning | Auto-refreshes every 1 second"
+    table.caption_style = "blink bold yellow"
+    return table
 
 # ============================================
-# SCANNER LOOP (only redraws when data changes)
+# SCANNER LOOP (Uses Rich Live to update in-place)
 # ============================================
 
 def start_scanner(adapter):
@@ -280,8 +251,9 @@ def start_scanner(adapter):
            '--output-format', 'csv',
            '--write', CSV_PREFIX,
            '--write-interval', '1']
-    print(f"\n[+] Running: {' '.join(cmd)}")
-    print("[+] Display updates only when data changes...")
+    
+    console.print(f"\n[bold green][+] Running: {' '.join(cmd)}[/bold green]")
+    console.print("[yellow][+] Starting real-time UI...[/yellow]")
     time.sleep(1)
 
     try:
@@ -289,7 +261,7 @@ def start_scanner(adapter):
                                            stdout=subprocess.DEVNULL,
                                            stderr=subprocess.DEVNULL)
     except Exception as e:
-        print(f"[-] Failed to start scanner: {e}")
+        console.print(f"[red][-] Failed to start scanner: {e}[/red]")
         return
 
     # Wait for first CSV
@@ -298,28 +270,35 @@ def start_scanner(adapter):
     last_networks = []
     last_clients = {}
 
-    while not STOP_SCANNING:
-        time.sleep(1)
-        csv_file = f'{CSV_PREFIX}-01.csv'
-        if not os.path.exists(csv_file):
-            continue
+    # Use Rich Live to handle the single-table updates
+    try:
+        with Live(refresh_per_second=1, console=console) as live:
+            while not STOP_SCANNING:
+                time.sleep(0.5)
+                csv_file = f'{CSV_PREFIX}-01.csv'
+                if not os.path.exists(csv_file):
+                    continue
 
-        networks = parse_networks(csv_file)
-        clients = parse_stations(csv_file)
+                networks = parse_networks(csv_file)
+                clients = parse_stations(csv_file)
 
-        # Only redraw if something changed
-        if networks != last_networks or clients != last_clients:
-            display_table(networks, clients)
-            last_networks = networks
-            last_clients = clients
+                # Only update the table if data actually changed
+                if networks != last_networks or clients != last_clients:
+                    table = generate_table(networks, clients)
+                    live.update(table)
+                    last_networks = networks
+                    last_clients = clients
 
-    # Cleanup process
-    if SCANNER_PROCESS:
-        SCANNER_PROCESS.terminate()
-        time.sleep(1)
-        if SCANNER_PROCESS.poll() is None:
-            SCANNER_PROCESS.kill()
-        SCANNER_PROCESS = None
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Cleanup process
+        if SCANNER_PROCESS:
+            SCANNER_PROCESS.terminate()
+            time.sleep(1)
+            if SCANNER_PROCESS.poll() is None:
+                SCANNER_PROCESS.kill()
+            SCANNER_PROCESS = None
 
 # ============================================
 # MAIN
@@ -328,24 +307,26 @@ def start_scanner(adapter):
 def main():
     signal.signal(signal.SIGINT, signal_handler)
 
-    print(BANNER)
-    Colors.print_colored("[+] Yevil - WiFi Security Testing Tool", 'cyan', True)
-    Colors.print_colored("[+] For Educational Purposes Only!", 'yellow')
-    print("="*50)
+    # Welcome Banner
+    console.print(Panel.fit(
+        "[bold cyan]YEVIL - WiFi Security Testing Tool v2.0.0\n"
+        "[yellow]⚠️  For Educational Purposes Only![/yellow]",
+        border_style="cyan"
+    ))
 
     if os.geteuid() != 0:
-        Colors.print_colored("[!] This tool requires root privileges!", 'red')
-        Colors.print_colored("[!] Please run with: sudo python3 yevil.py", 'yellow')
+        console.print("[bold red][!] This tool requires root privileges![/bold red]")
+        console.print("[yellow][!] Please run with: sudo python3 yevil.py[/yellow]")
         sys.exit(1)
 
     adapters = detect_adapters()
     if not adapters:
-        Colors.print_colored("\n[!] No wireless adapters detected!", 'red')
+        console.print("\n[bold red][!] No wireless adapters detected![/bold red]")
         sys.exit(1)
 
-    Colors.print_colored("\n📋 Detected Adapters:", 'cyan', True)
+    console.print("\n[bold cyan]📋 Detected Adapters:[/bold cyan]")
     for i, adapter in enumerate(adapters, 1):
-        print(f"   {i}. {adapter}")
+        console.print(f"   {i}. {adapter}")
 
     print()
     while True:
@@ -357,49 +338,50 @@ def main():
                 break
         except:
             pass
-        Colors.print_colored("[-] Invalid selection!", 'red')
+        console.print("[red][-] Invalid selection![/red]")
 
-    Colors.print_colored(f"\n[+] Selected: {selected}", 'green')
+    console.print(f"\n[green][+] Selected: {selected}[/green]")
 
     # Check mode
     result = subprocess.run(['iwconfig', selected], capture_output=True, text=True)
     if 'Mode:Monitor' in result.stdout:
-        Colors.print_colored("[+] Already in monitor mode", 'green')
+        console.print("[green][+] Already in monitor mode[/green]")
         monitor_adapter = selected
     else:
-        Colors.print_colored("[!] Adapter is not in monitor mode!", 'yellow')
+        console.print("[yellow][!] Adapter is not in monitor mode![/yellow]")
         set_mon = input("\n[?] Set monitor mode now? (y/n): ")
         if set_mon.lower() == 'y':
             if set_monitor_mode(selected):
                 monitor_adapter = selected
             else:
-                Colors.print_colored("[!] Failed to set monitor mode!", 'red')
+                console.print("[red][!] Failed to set monitor mode![/red]")
                 sys.exit(1)
         else:
-            Colors.print_colored("[+] Exiting...", 'yellow')
+            console.print("[yellow][+] Exiting...[/yellow]")
             sys.exit(0)
 
     start_scanner(monitor_adapter)
 
+    # Post-scan cleanup
     print("\n" + "="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
     if cleanup_choice.lower() == 'y':
         cleanup()
     else:
-        Colors.print_colored("[+] Adapter remains in monitor mode", 'yellow')
-        Colors.print_colored(f"[+] Manual cleanup: sudo ip link set {monitor_adapter} down && sudo iw dev {monitor_adapter} set type managed && sudo ip link set {monitor_adapter} up", 'yellow')
+        console.print("[yellow][+] Adapter remains in monitor mode[/yellow]")
+        console.print(f"[yellow][+] Manual cleanup: sudo ip link set {monitor_adapter} down && sudo iw dev {monitor_adapter} set type managed && sudo ip link set {monitor_adapter} up[/yellow]")
 
-    Colors.print_colored("\n[+] Done!", 'green', True)
+    console.print("\n[bold green][+] Done![/bold green]")
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        Colors.print_colored("\n\n[+] Ctrl+C detected. Cleaning up...", 'yellow')
+        console.print("\n\n[bold yellow][+] Ctrl+C detected. Cleaning up...[/bold yellow]")
         cleanup()
-        Colors.print_colored("[+] Goodbye!", 'cyan', True)
+        console.print("[bold cyan][+] Goodbye![/bold cyan]")
         sys.exit(0)
     except Exception as e:
-        Colors.print_colored(f"\n[-] Error: {e}", 'red')
+        console.print(f"\n[bold red][-] Error: {e}[/bold red]")
         cleanup()
         sys.exit(1)
