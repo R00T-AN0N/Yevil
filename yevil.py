@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Real‑Time WiFi Scanner (CSV-based, no leftover files)
+Yevil - Live WiFi Scanner (updates in‑place, redraws only on change)
 """
 
 import os
@@ -79,7 +79,6 @@ def cleanup():
             pass
         SCANNER_PROCESS = None
 
-    # Delete temporary CSV files
     for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
         if os.path.exists(f):
             try:
@@ -162,7 +161,6 @@ def set_monitor_mode(adapter):
 # ============================================
 
 def parse_networks(csv_file):
-    """Parse BSSID section of the CSV."""
     networks = []
     try:
         with open(csv_file, 'r') as f:
@@ -177,10 +175,7 @@ def parse_networks(csv_file):
                     continue
                 networks.append({
                     'bssid': bssid,
-                    'first_seen': row[1],
-                    'last_seen': row[2],
                     'channel': row[3],
-                    'speed': row[4],
                     'privacy': row[5],
                     'cipher': row[6],
                     'authentication': row[7],
@@ -193,7 +188,6 @@ def parse_networks(csv_file):
     return networks
 
 def parse_stations(csv_file):
-    """Parse station section to count clients per BSSID."""
     clients = defaultdict(int)
     try:
         with open(csv_file, 'r') as f:
@@ -215,7 +209,7 @@ def parse_stations(csv_file):
 # ============================================
 
 def display_table(networks, clients):
-    """Display a colourful table with client counts."""
+    """Print a colourful table.  Clears the screen once, then draws everything."""
     if not networks:
         sys.stdout.write(Colors.clear)
         sys.stdout.flush()
@@ -241,7 +235,6 @@ def display_table(networks, clients):
     print(f"  Networks found: {len(networks)}".center(120))
     print(f"{'='*120}{Colors.reset}")
 
-    # Header
     header = f"{Colors.bold}{Colors.yellow}"
     header += f"{'#':<4} {'ESSID':<30} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
     header += f"{Colors.reset}"
@@ -269,13 +262,13 @@ def display_table(networks, clients):
     print(f"{Colors.cyan}{'='*120}{Colors.reset}")
 
 # ============================================
-# SCANNER LOOP
+# SCANNER LOOP (only redraws when data changes)
 # ============================================
 
 def start_scanner(adapter):
     global SCANNER_PROCESS, STOP_SCANNING
 
-    # Remove old CSV files
+    # Clean old CSVs
     for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
         if os.path.exists(f):
             try:
@@ -283,13 +276,12 @@ def start_scanner(adapter):
             except:
                 pass
 
-    # Start airodump-ng with CSV output
     cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg',
            '--output-format', 'csv',
            '--write', CSV_PREFIX,
            '--write-interval', '1']
     print(f"\n[+] Running: {' '.join(cmd)}")
-    print("[+] Display will update every second...")
+    print("[+] Display updates only when data changes...")
     time.sleep(1)
 
     try:
@@ -300,17 +292,26 @@ def start_scanner(adapter):
         print(f"[-] Failed to start scanner: {e}")
         return
 
-    # Initial delay for first CSV
+    # Wait for first CSV
     time.sleep(2)
+
+    last_networks = []
+    last_clients = {}
 
     while not STOP_SCANNING:
         time.sleep(1)
-        if not os.path.exists(f'{CSV_PREFIX}-01.csv'):
+        csv_file = f'{CSV_PREFIX}-01.csv'
+        if not os.path.exists(csv_file):
             continue
 
-        networks = parse_networks(f'{CSV_PREFIX}-01.csv')
-        clients = parse_stations(f'{CSV_PREFIX}-01.csv')
-        display_table(networks, clients)
+        networks = parse_networks(csv_file)
+        clients = parse_stations(csv_file)
+
+        # Only redraw if something changed
+        if networks != last_networks or clients != last_clients:
+            display_table(networks, clients)
+            last_networks = networks
+            last_clients = clients
 
     # Cleanup process
     if SCANNER_PROCESS:
@@ -378,10 +379,8 @@ def main():
             Colors.print_colored("[+] Exiting...", 'yellow')
             sys.exit(0)
 
-    # Start scanner
     start_scanner(monitor_adapter)
 
-    # After scanning
     print("\n" + "="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
     if cleanup_choice.lower() == 'y':
