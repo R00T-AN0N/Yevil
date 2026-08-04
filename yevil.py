@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Live WiFi Scanner (Flawless Overwrite Engine)
+Yevil - Live WiFi Scanner (Absolute Overwrite Engine)
 """
 
 import os
@@ -11,8 +11,9 @@ import signal
 import csv
 import select
 import shutil
-import math
 import re
+import fcntl
+import termios
 from collections import defaultdict
 
 # ============================================
@@ -37,6 +38,7 @@ MONITOR_INTERFACE = None
 SCANNER_PROCESS = None
 STOP_SCANNING = False
 CSV_PREFIX = '/tmp/yevil_scan'
+HAS_SAVED_CURSOR = False
 
 # ============================================
 # CLEANUP
@@ -176,19 +178,48 @@ def parse_stations(csv_file):
     return clients
 
 # ============================================
-# BULLETPROOF TABLE BUILDER (No terminal wrapping)
+# FLAWLESS ANSI UPDATE ENGINE
+# ============================================
+
+def update_display(new_lines):
+    global HAS_SAVED_CURSOR
+    
+    if not HAS_SAVED_CURSOR:
+        # First time running: Save the exact line at the top of the table
+        sys.stdout.write('\033[s')
+        HAS_SAVED_CURSOR = True
+        # Print table
+        sys.stdout.write('\n'.join(new_lines) + '\n')
+    else:
+        # Subsequent runs: Go back to saved position and wipe everything below it
+        sys.stdout.write('\033[u')  # Restore cursor
+        sys.stdout.write('\033[J')  # Clear from cursor to end of screen
+        # Print table
+        sys.stdout.write('\n'.join(new_lines) + '\n')
+    
+    sys.stdout.flush()
+
+# ============================================
+# RESPONSIVE TABLE BUILDER
 # ============================================
 
 def safe_truncate(text, max_len):
-    """Truncates text to ensure it stays under max_len, avoiding terminal wraps."""
+    """Truncates text so the terminal never wraps the line."""
     clean_text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
     if len(clean_text) <= max_len:
         return text
-    # Since ESSID is plain text (unless Hidden), this safe slice works beautifully
+    
+    # If we can't even fit 3 characters, return empty string
+    if max_len <= 3:
+        return ""
+    
+    # Strip colors and truncate safely
     return text[:max_len-3] + "..."
 
-def build_table(networks, clients, term_width):
-    # Sort by signal strength
+def build_table(networks, clients):
+    term_width = shutil.get_terminal_size().columns
+    
+    # Sort networks
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -196,9 +227,11 @@ def build_table(networks, clients, term_width):
     except:
         networks_sorted = networks
 
-    # Fixed character column widths (including spaces)
-    FIXED_WIDTH = 4 + 1 + 17 + 1 + 4 + 1 + 6 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 6 # 71 chars
-    essid_width = max(5, term_width - FIXED_WIDTH - 3) # Adjust for breathing room
+    # Fixed character column widths (including 1 space between them)
+    # #:4, ESSID:?, BSSID:17, CH:4, PWR:6, ENC:8, CIPHER:8, AUTH:10, CLIENTS:6 = 71 chars
+    FIXED_WIDTH = 71
+    # Calculate ESSID width, ensure it never overflows
+    essid_width = max(0, term_width - FIXED_WIDTH - 1)
 
     lines = []
     
@@ -206,7 +239,7 @@ def build_table(networks, clients, term_width):
     title = f"{CYAN}YEVIL - Real-Time WiFi Scanner (Networks found: {len(networks)}){RESET}"
     lines.append(title)
 
-    # 2. Headers (Using a manual space calculation so columns align perfectly)
+    # 2. Headers
     header = f"{BOLD}{YELLOW}{'#':<4} {'ESSID':<{essid_width}} {'BSSID':<17} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}{RESET}"
     lines.append(header)
 
@@ -225,7 +258,7 @@ def build_table(networks, clients, term_width):
         else:
             ssid_display = ssid
         
-        # Safe truncation prevents terminal wrapping at ANY terminal width
+        # Strictly truncate SSID to prevent terminal wrapping
         ssid_display = safe_truncate(ssid_display, essid_width)
 
         client_count = clients.get(net['bssid'].upper(), 0)
@@ -242,40 +275,11 @@ def build_table(networks, clients, term_width):
         
         lines.append(row)
 
-    # 4. Footer
+    # 4. Footer (The 'q' command)
     footer = f"{BOLD}{YELLOW}Press 'q' to stop scanning and show results{RESET}"
     lines.append(footer)
 
     return lines
-
-# ============================================
-# FLAWLESS OVERWRITE LOGIC (No Clear Screen)
-# ============================================
-
-def update_display(old_lines, new_lines):
-    """Replaces old lines with new lines in-place, leaving zero artifacts."""
-    if not old_lines:
-        sys.stdout.write('\n'.join(new_lines) + '\n')
-        sys.stdout.flush()
-        return
-
-    # Move cursor up the exact number of lines printed previously
-    sys.stdout.write(f'\033[{len(old_lines)}A')
-
-    # Write new lines and clear trailing old lines
-    max_len = max(len(old_lines), len(new_lines))
-    for i in range(max_len):
-        sys.stdout.write('\033[2K')  # Erase entire current line
-        
-        if i < len(new_lines):
-            sys.stdout.write(new_lines[i])
-        else:
-            sys.stdout.write('') # Write blank to clear the old line completely
-
-        if i < max_len - 1:
-            sys.stdout.write('\n')
-    
-    sys.stdout.flush()
 
 # ============================================
 # SCANNER LOOP
@@ -308,11 +312,8 @@ def start_scanner(adapter):
 
     last_networks = []
     last_clients = defaultdict(int)
-    old_lines = []
-    last_width = 0
 
     # Set stdin to non-blocking for 'q' detection
-    import fcntl, termios
     fd = sys.stdin.fileno()
     fl = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
@@ -334,17 +335,13 @@ def start_scanner(adapter):
 
         networks = parse_networks(csv_file)
         clients = parse_stations(csv_file)
-        current_width = shutil.get_terminal_size().columns
 
-        if networks != last_networks or clients != last_clients or current_width != last_width:
-            new_lines = build_table(networks, clients, current_width)
+        if networks != last_networks or clients != last_clients:
+            new_lines = build_table(networks, clients)
+            update_display(new_lines)
             
-            if new_lines != old_lines or current_width != last_width:
-                update_display(old_lines, new_lines)
-                old_lines = new_lines
-                last_width = current_width
-                last_networks = networks
-                last_clients = clients
+            last_networks = networks
+            last_clients = clients
         
         time.sleep(0.3)
 
@@ -373,7 +370,7 @@ def main():
 ║       ██║   ███████╗ ╚████╔╝ ██║███████╗                     ║
 ║       ╚═╝   ╚══════╝  ╚═══╝  ╚═╝╚══════╝                     ║
 ║                                                               ║
-║           WiFi Security Testing Tool                          ║
+║           WiFi Security Testing Tool (ANSI TUI)               ║
 ║           ⚠️  For Educational Purposes Only!                  ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -430,8 +427,8 @@ def main():
     # Start scan
     start_scanner(monitor_adapter)
 
-    # The table is already beautifully printed on the screen, so we just ask below it!
-    print() # Move cursor down to a fresh line
+    # The table remains perfectly on the screen. We ask for cleanup underneath it.
+    print() # Move cursor down
     print("="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
     if cleanup_choice.lower() == 'y':
