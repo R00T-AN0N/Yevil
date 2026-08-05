@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Clean Live WiFi Scanner (no messy tables)
+Yevil - Static WiFi Scanner (new networks = new rows, no flicker)
 """
 
 import os
@@ -205,29 +205,26 @@ def parse_stations(csv_file):
     return clients
 
 # ============================================
-# CLEAN DISPLAY
+# STATIC TABLE DISPLAY
 # ============================================
 
-def display_table(networks, clients):
-    """Print a clean, well-aligned table."""
-    # Clear the screen
+def draw_static_table(networks, clients):
+    """Draw a single static table (clears screen once, then prints everything)."""
     sys.stdout.write(Colors.clear)
     sys.stdout.flush()
 
-    # Header
     print(f"{Colors.cyan}{'='*120}")
-    print(f"  YEVIL - Real-Time WiFi Scanner".center(120))
+    print(f"  YEVIL - Static WiFi Scanner".center(120))
     print(f"  Networks found: {len(networks)}".center(120))
     print(f"{'='*120}{Colors.reset}")
 
-    # Column headers with fixed widths
     header = f"{Colors.bold}{Colors.yellow}"
     header += f"{'#':<4} {'ESSID':<30} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
     header += f"{Colors.reset}"
     print(header)
     print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
 
-    # Sort by signal strength
+    # Sort by signal strength (optional)
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -236,32 +233,27 @@ def display_table(networks, clients):
         networks_sorted = networks
 
     for idx, net in enumerate(networks_sorted, 1):
-        # Determine colour
         try:
             pwr = int(net['power'])
             color = 'green' if pwr > -50 else 'yellow' if pwr > -65 else 'red'
         except:
             color = 'white'
 
-        # Truncate SSID to 30 chars
         ssid = net['ssid'][:30] if len(net['ssid']) > 30 else net['ssid']
         if ssid == '':
             ssid = '<Hidden>'
-
         client_count = clients.get(net['bssid'], 0)
 
-        # Build a fixed-width row
         row = f"{idx:<4} {ssid:<30} {net['bssid']:<18} {net['channel']:<4} "
         row += f"{net['power']:<6} {net['privacy']:<8} {net['cipher']:<8} {net['authentication']:<10} {client_count:<6}"
         Colors.print_colored(row, color)
 
-    # Footer
     print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-    print(f"{Colors.white}Press Ctrl+C to stop scanning{Colors.reset}")
+    print(f"{Colors.white}Press Ctrl+C to stop scanning (new networks will appear below){Colors.reset}")
     print(f"{Colors.cyan}{'='*120}{Colors.reset}")
 
 # ============================================
-# SCANNER LOOP
+# SCANNER LOOP (only add new rows when new BSSID appears)
 # ============================================
 
 def start_scanner(adapter):
@@ -294,11 +286,12 @@ def start_scanner(adapter):
     # Wait for first CSV
     time.sleep(2)
 
-    last_networks = []
-    last_clients = {}
+    seen_bssids = set()
+    all_networks = []
+    all_clients = defaultdict(int)
 
     while not STOP_SCANNING:
-        time.sleep(1)
+        time.sleep(0.5)  # check frequently
         csv_file = f'{CSV_PREFIX}-01.csv'
         if not os.path.exists(csv_file):
             continue
@@ -306,11 +299,16 @@ def start_scanner(adapter):
         networks = parse_networks(csv_file)
         clients = parse_stations(csv_file)
 
-        # Redraw only if data changed
-        if networks != last_networks or clients != last_clients:
-            display_table(networks, clients)
-            last_networks = networks
-            last_clients = clients
+        # Look for new BSSIDs
+        new_bssids = set(net['bssid'] for net in networks) - seen_bssids
+        if new_bssids:
+            seen_bssids.update(new_bssids)
+            # Add all networks (in case of update)
+            # We'll rebuild the full list from the new CSV
+            all_networks = networks  # replace with latest
+            all_clients = clients
+            # Redraw the whole table
+            draw_static_table(all_networks, all_clients)
 
     # Cleanup process
     if SCANNER_PROCESS:
