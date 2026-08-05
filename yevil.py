@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Yevil - Real‑time WiFi Scanner v2.2.0
-- Curses TUI for smooth, single-table real-time updates (no screen tearing/duplication).
-- Clean exit on Ctrl+C / 'q'.
-- Prints persistent AP table to stdout after exit so results stay visible on screen.
+Yevil - Real‑time WiFi Scanner v2.4.0
+- Curses TUI for live scanning.
+- Persistent AP summary after exit.
+- Select AP for focused scan + handshake detection.
 """
 
 import os
@@ -32,7 +32,6 @@ clients = defaultdict(set)  # bssid -> set of station MACs
 # ============================================
 
 def cleanup_files():
-    """Removes temporary CSV files."""
     for f in glob.glob(f"{CSV_PREFIX}*"):
         try:
             os.remove(f)
@@ -41,7 +40,6 @@ def cleanup_files():
 
 
 def cleanup():
-    """Stops scanning processes and cleans up temporary files."""
     global SCANNER_PROCESS
     if SCANNER_PROCESS:
         try:
@@ -52,12 +50,10 @@ def cleanup():
         except:
             pass
         SCANNER_PROCESS = None
-
     cleanup_files()
 
 
 def reset_adapter():
-    """Restores wireless interface back to managed mode."""
     global MONITOR_INTERFACE
     if MONITOR_INTERFACE:
         try:
@@ -71,7 +67,6 @@ def reset_adapter():
 
 
 def detect_adapters():
-    """Detects physical wireless adapters using iwconfig."""
     adapters = []
     try:
         result = subprocess.run(['iwconfig'], capture_output=True, text=True)
@@ -86,7 +81,6 @@ def detect_adapters():
 
 
 def set_monitor_mode(adapter):
-    """Enables monitor mode on selected adapter."""
     global MONITOR_INTERFACE
     try:
         subprocess.run(['airmon-ng', 'check', 'kill'], capture_output=True)
@@ -103,7 +97,6 @@ def set_monitor_mode(adapter):
 # ============================================
 
 def parse_csv_file(csv_file):
-    """Reads airodump-ng output CSV to extract clean AP and Client details."""
     global networks, clients
     if not os.path.exists(csv_file):
         return
@@ -129,17 +122,12 @@ def parse_csv_file(csv_file):
             parts = [p.strip() for p in line.split(',')]
 
             if not parsing_stations:
-                # Access Point parse
                 if len(parts) >= 14 and re.match(r'([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', parts[0]):
                     bssid = parts[0]
                     power = parts[8]
                     channel = parts[3]
                     privacy = parts[5]
-                    ssid = parts[13]
-
-                    if not ssid or ssid == "":
-                        ssid = "<Hidden>"
-
+                    ssid = parts[13] if parts[13] else "<Hidden>"
                     temp_nets[bssid] = {
                         'bssid': bssid,
                         'power': power,
@@ -148,7 +136,6 @@ def parse_csv_file(csv_file):
                         'ssid': ssid
                     }
             else:
-                # Connected Client parse
                 if len(parts) >= 6 and re.match(r'([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', parts[0]):
                     client_mac = parts[0]
                     associated_bssid = parts[5]
@@ -167,21 +154,19 @@ def parse_csv_file(csv_file):
 def curses_display(stdscr):
     curses.curs_set(0)
     stdscr.nodelay(True)
-    stdscr.timeout(400)  # Refresh screen every 400ms
+    stdscr.timeout(400)
 
-    # Color Palette Setup
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)   # Strong Signal
-    curses.init_pair(2, curses.COLOR_YELLOW, -1)  # Medium Signal
-    curses.init_pair(3, curses.COLOR_RED, -1)     # Weak Signal
-    curses.init_pair(4, curses.COLOR_CYAN, -1)    # Headers & Borders
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_YELLOW, -1)
+    curses.init_pair(3, curses.COLOR_RED, -1)
+    curses.init_pair(4, curses.COLOR_CYAN, -1)
 
     target_csv = f"{CSV_PREFIX}-01.csv"
 
     while True:
         key = stdscr.getch()
-        # Exit on 'q', 'Q', or Ctrl+C (ASCII 3)
         if key in (ord('q'), ord('Q'), 3):
             break
 
@@ -190,16 +175,13 @@ def curses_display(stdscr):
 
         max_y, max_x = stdscr.getmaxyx()
 
-        # Title
         title = "=== YEVIL - REAL-TIME WI-FI SCANNER ==="
         stdscr.addstr(0, max(0, (max_x - len(title)) // 2), title, curses.color_pair(4) | curses.A_BOLD)
 
-        # Header Row
         header = f"{'NUM':<4} {'ESSID':<28} {'CH':<4} {'ENCR':<8} {'POWER':<8} {'CLIENTS':<7} {'BSSID'}"
         stdscr.addstr(2, 0, header[:max_x - 1], curses.color_pair(4) | curses.A_BOLD)
         stdscr.addstr(3, 0, "-" * min(max_x - 1, 80), curses.color_pair(4))
 
-        # Sort APs by Signal Strength
         def get_power(net):
             try:
                 return int(net['power'])
@@ -211,16 +193,10 @@ def curses_display(stdscr):
         row_idx = 4
         for idx, net in enumerate(sorted_nets, 1):
             if row_idx >= max_y - 2:
-                break  # Prevents text wrapping at bottom of terminal
-
+                break
             try:
                 pwr = int(net['power'])
-                if pwr > -60:
-                    color = curses.color_pair(1)
-                elif pwr > -75:
-                    color = curses.color_pair(2)
-                else:
-                    color = curses.color_pair(3)
+                color = curses.color_pair(1) if pwr > -60 else curses.color_pair(2) if pwr > -75 else curses.color_pair(3)
             except:
                 color = curses.color_pair(0)
 
@@ -232,7 +208,6 @@ def curses_display(stdscr):
             stdscr.addstr(row_idx, 0, line[:max_x - 1], color)
             row_idx += 1
 
-        # Footer Prompt
         footer = "Press 'q' or Ctrl+C to stop scanning and freeze network list."
         stdscr.addstr(max_y - 1, 0, footer[:max_x - 1], curses.color_pair(4) | curses.A_REVERSE)
 
@@ -243,7 +218,6 @@ def curses_display(stdscr):
 # ============================================
 
 def print_final_summary():
-    """Prints a static table to standard output so results stay on screen after scan closes."""
     if not networks:
         print("\n\033[91m[-] No networks discovered during scan.\033[0m")
         return
@@ -266,7 +240,6 @@ def print_final_summary():
         ssid = net['ssid'][:26]
         pwr_str = f"{net['power']} dB" if net['power'].lstrip('-').isdigit() else net['power']
         client_count = len(clients.get(net['bssid'], set()))
-        
         try:
             pwr = int(net['power'])
             color_code = '\033[92m' if pwr > -60 else '\033[93m' if pwr > -75 else '\033[91m'
@@ -279,10 +252,81 @@ def print_final_summary():
     print("\033[96m" + "=" * 80 + "\033[0m\n")
 
 # ============================================
+# TARGETED SCAN WITH HANDSHAKE DETECTION
+# ============================================
+
+def run_targeted_scan(bssid, channel, interface):
+    """Launch focused airodump-ng and detect if a handshake is captured."""
+    cap_prefix = f"/tmp/yevil_handshake_{bssid.replace(':', '_')}"
+    cap_file = f"{cap_prefix}-01.cap"
+    csv_file = f"{cap_prefix}-01.csv"
+
+    # Clean old files
+    for f in [cap_file, csv_file]:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except:
+                pass
+
+    # Start airodump-ng
+    cmd_airodump = [
+        'sudo', 'airodump-ng',
+        '--bssid', bssid,
+        '-c', channel,
+        '--write', cap_prefix,
+        '--output-format', 'pcap,csv',
+        interface
+    ]
+
+    print(f"\n[+] Running focused scan: {' '.join(cmd_airodump)}")
+    print("[+] Press Ctrl+C to stop the scan.")
+    print("[+] The capture will be saved and analysed for a handshake.\n")
+
+    try:
+        subprocess.run(cmd_airodump)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"[-] Error during scan: {e}")
+        return
+
+    # Wait for files to flush
+    time.sleep(1)
+
+    # Analyse for handshake
+    if os.path.exists(cap_file):
+        print(f"\n[+] Analysing {cap_file} for handshake...")
+        try:
+            aircmd = ['aircrack-ng', '-b', bssid, cap_file]
+            result = subprocess.run(aircmd, capture_output=True, text=True)
+            output = result.stdout + result.stderr
+
+            if 'WPA (1 handshake)' in output:
+                print("\033[92m[✅] HANDSHAKE CAPTURED SUCCESSFULLY!\033[0m")
+            elif 'WPA (0 handshake)' in output:
+                print("\033[93m[!] No handshake found in the capture.\033[0m")
+            else:
+                print("[!] Could not determine handshake status. Try longer capture or use deauth.")
+        except Exception as e:
+            print(f"[-] Error analysing capture: {e}")
+    else:
+        print("[-] No capture file found.")
+
+    # Optional: delete capture files after analysis
+    # clean = input("\n[?] Delete capture files? (y/n): ")
+    # if clean.lower() == 'y':
+    #     for f in [cap_file, csv_file]:
+    #         try: os.remove(f)
+    #         except: pass
+
+# ============================================
 # MAIN EXECUTION
 # ============================================
 
 def main():
+    global SCANNER_PROCESS
+
     if os.geteuid() != 0:
         print("[-] This tool requires root privileges! Run with: sudo python3 yevil.py")
         sys.exit(1)
@@ -311,7 +355,7 @@ def main():
 
     cleanup_files()
 
-    # Launch background airodump engine
+    # Launch background airodump-ng
     cmd = [
         'airodump-ng', selected,
         '--band', 'abg',
@@ -319,13 +363,11 @@ def main():
         '--output-format', 'csv'
     ]
 
-    global SCANNER_PROCESS
     SCANNER_PROCESS = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     print("[*] Launching Real-time Interface...")
     time.sleep(1)
 
-    # Launch Curses UI (Caught safely to prevent KeyboardInterrupt tracebacks)
     try:
         curses.wrapper(curses_display)
     except KeyboardInterrupt:
@@ -335,14 +377,34 @@ def main():
     finally:
         cleanup()
 
-    # Output persistent AP list to stdout after Curses closes
     print_final_summary()
 
-    # Optional reset prompt
-    reset_choice = input("[?] Restore adapter to normal managed mode? (y/n): ")
+    # Target selection & handshake scan
+    if networks:
+        print("\n[?] Enter the number of the AP to run a focused scan (or press Enter to skip):")
+        try:
+            choice = input("> ").strip()
+            if choice:
+                idx = int(choice) - 1
+                sorted_nets = sorted(networks.values(),
+                                     key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
+                                     reverse=True)
+                if 0 <= idx < len(sorted_nets):
+                    target = sorted_nets[idx]
+                    print(f"\n[+] Targeting {target['ssid']} ({target['bssid']}) on channel {target['channel']}")
+                    run_targeted_scan(target['bssid'], target['channel'], selected)
+                else:
+                    print("[-] Invalid selection, skipping targeted scan.")
+        except ValueError:
+            print("[-] Invalid input, skipping.")
+        except KeyboardInterrupt:
+            print("\n[+] Skipped targeted scan.")
+
+    reset_choice = input("\n[?] Restore adapter to normal managed mode? (y/n): ")
     if reset_choice.lower() == 'y':
         reset_adapter()
 
+    print("\n[+] Done. Goodbye!")
 
 if __name__ == "__main__":
     main()
