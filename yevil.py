@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Yevil - Static WiFi Scanner (new networks = new rows, no flicker)
+Yevil - Static WiFi Scanner (one table, new networks add rows)
 """
 
 import os
@@ -11,10 +11,7 @@ import signal
 import csv
 from collections import defaultdict
 
-# ============================================
-# COLOURS
-# ============================================
-
+# Colours
 class Colors:
     red = '\033[91m'
     green = '\033[92m'
@@ -31,10 +28,7 @@ class Colors:
         style = Colors.bold if bold else ''
         print(f"{style}{getattr(Colors, color, '')}{text}{Colors.reset}")
 
-# ============================================
-# BANNER
-# ============================================
-
+# Banner
 BANNER = f"""
 {Colors.cyan}
 ╔═══════════════════════════════════════════════════════════════╗
@@ -53,19 +47,13 @@ BANNER = f"""
 {Colors.reset}
 """
 
-# ============================================
-# GLOBALS
-# ============================================
-
+# Globals
 MONITOR_INTERFACE = None
 SCANNER_PROCESS = None
 STOP_SCANNING = False
 CSV_PREFIX = '/tmp/yevil_scan'
 
-# ============================================
-# CLEANUP
-# ============================================
-
+# Cleanup
 def cleanup():
     global MONITOR_INTERFACE, SCANNER_PROCESS
     print("\n[+] Cleaning up...")
@@ -113,10 +101,7 @@ def signal_handler(sig, frame):
     print("\n[+] Goodbye!")
     sys.exit(0)
 
-# ============================================
-# ADAPTER FUNCTIONS
-# ============================================
-
+# Adapter functions
 def detect_adapters():
     print("\n[+] Detecting wireless adapters...")
     adapters = []
@@ -156,11 +141,9 @@ def set_monitor_mode(adapter):
         print(f"[-] Failed: {e}")
         return False
 
-# ============================================
-# CSV PARSERS
-# ============================================
-
+# CSV PARSERS – correctly read the airodump-ng CSV format
 def parse_networks(csv_file):
+    """Extract BSSID rows from the CSV."""
     networks = []
     try:
         with open(csv_file, 'r') as f:
@@ -168,6 +151,7 @@ def parse_networks(csv_file):
             for row in reader:
                 if len(row) < 14:
                     continue
+                # Skip header
                 if row[0] == 'BSSID':
                     continue
                 bssid = row[0].strip()
@@ -183,11 +167,13 @@ def parse_networks(csv_file):
                     'beacons': row[9],
                     'ssid': row[13].strip() if len(row) > 13 and row[13].strip() else '<Hidden>'
                 })
-    except:
+    except Exception as e:
+        # silently ignore
         pass
     return networks
 
 def parse_stations(csv_file):
+    """Extract station rows to count clients per BSSID."""
     clients = defaultdict(int)
     try:
         with open(csv_file, 'r') as f:
@@ -204,12 +190,9 @@ def parse_stations(csv_file):
         pass
     return clients
 
-# ============================================
-# STATIC TABLE DISPLAY
-# ============================================
-
-def draw_static_table(networks, clients):
-    """Draw a single static table (clears screen once, then prints everything)."""
+# DISPLAY – draw a clean table once, then re-draw only when new networks appear
+def draw_table(networks, clients):
+    """Draw a single static table with all columns aligned."""
     sys.stdout.write(Colors.clear)
     sys.stdout.flush()
 
@@ -224,7 +207,7 @@ def draw_static_table(networks, clients):
     print(header)
     print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
 
-    # Sort by signal strength (optional)
+    # Sort by signal strength (strongest first)
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -249,13 +232,10 @@ def draw_static_table(networks, clients):
         Colors.print_colored(row, color)
 
     print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-    print(f"{Colors.white}Press Ctrl+C to stop scanning (new networks will appear below){Colors.reset}")
+    print(f"{Colors.white}Press Ctrl+C to stop scanning (new networks will appear when found){Colors.reset}")
     print(f"{Colors.cyan}{'='*120}{Colors.reset}")
 
-# ============================================
-# SCANNER LOOP (only add new rows when new BSSID appears)
-# ============================================
-
+# SCANNER – poll CSV, add new BSSIDs only
 def start_scanner(adapter):
     global SCANNER_PROCESS, STOP_SCANNING
 
@@ -291,7 +271,7 @@ def start_scanner(adapter):
     all_clients = defaultdict(int)
 
     while not STOP_SCANNING:
-        time.sleep(0.5)  # check frequently
+        time.sleep(0.5)
         csv_file = f'{CSV_PREFIX}-01.csv'
         if not os.path.exists(csv_file):
             continue
@@ -299,16 +279,15 @@ def start_scanner(adapter):
         networks = parse_networks(csv_file)
         clients = parse_stations(csv_file)
 
-        # Look for new BSSIDs
+        # Find new BSSIDs
         new_bssids = set(net['bssid'] for net in networks) - seen_bssids
         if new_bssids:
             seen_bssids.update(new_bssids)
-            # Add all networks (in case of update)
-            # We'll rebuild the full list from the new CSV
-            all_networks = networks  # replace with latest
+            # Replace all networks with the latest full list
+            all_networks = networks
             all_clients = clients
-            # Redraw the whole table
-            draw_static_table(all_networks, all_clients)
+            # Redraw the whole table once
+            draw_table(all_networks, all_clients)
 
     # Cleanup process
     if SCANNER_PROCESS:
@@ -318,10 +297,7 @@ def start_scanner(adapter):
             SCANNER_PROCESS.kill()
         SCANNER_PROCESS = None
 
-# ============================================
 # MAIN
-# ============================================
-
 def main():
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -358,7 +334,7 @@ def main():
 
     Colors.print_colored(f"\n[+] Selected: {selected}", 'green')
 
-    # Check mode
+    # Check monitor mode
     result = subprocess.run(['iwconfig', selected], capture_output=True, text=True)
     if 'Mode:Monitor' in result.stdout:
         Colors.print_colored("[+] Already in monitor mode", 'green')
