@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-Yevil - Custom WiFi Scanner (ESSID first, client count, colored, no bottom table)
+Yevil - WiFi Scanner (ESSID first, client count, colored, static table)
 """
 
 import os
 import sys
 import subprocess
-import re
 import time
 import signal
+import csv
 from collections import defaultdict
 
-# ============================================
-# COLOURS
-# ============================================
-
+# Colours
 class Colors:
     red = '\033[91m'
     green = '\033[92m'
@@ -31,10 +28,7 @@ class Colors:
         style = Colors.bold if bold else ''
         print(f"{style}{getattr(Colors, color, '')}{text}{Colors.reset}")
 
-# ============================================
-# BANNER
-# ============================================
-
+# Banner
 BANNER = f"""
 {Colors.cyan}
 ╔═══════════════════════════════════════════════════════════════╗
@@ -53,18 +47,13 @@ BANNER = f"""
 {Colors.reset}
 """
 
-# ============================================
-# GLOBALS
-# ============================================
-
+# Globals
 MONITOR_INTERFACE = None
 SCANNER_PROCESS = None
 STOP_SCANNING = False
+CSV_PREFIX = '/tmp/yevil_scan'
 
-# ============================================
-# CLEANUP
-# ============================================
-
+# Cleanup
 def cleanup():
     global MONITOR_INTERFACE, SCANNER_PROCESS
     print("\n[+] Cleaning up...")
@@ -77,6 +66,13 @@ def cleanup():
         except:
             pass
         SCANNER_PROCESS = None
+
+    for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except:
+                pass
 
     if MONITOR_INTERFACE:
         try:
@@ -105,10 +101,7 @@ def signal_handler(sig, frame):
     print("\n[+] Goodbye!")
     sys.exit(0)
 
-# ============================================
-# ADAPTER FUNCTIONS
-# ============================================
-
+# Adapter functions
 def detect_adapters():
     print("\n[+] Detecting wireless adapters...")
     adapters = []
@@ -148,50 +141,58 @@ def set_monitor_mode(adapter):
         print(f"[-] Failed: {e}")
         return False
 
-# ============================================
-# PARSER AND DISPLAY
-# ============================================
+# CSV Parsers
+def parse_networks(csv_file):
+    networks = []
+    try:
+        with open(csv_file, 'r') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 14:
+                    continue
+                if row[0] == 'BSSID':
+                    continue
+                bssid = row[0].strip()
+                if not bssid:
+                    continue
+                networks.append({
+                    'bssid': bssid,
+                    'channel': row[3],
+                    'privacy': row[5],
+                    'cipher': row[6],
+                    'authentication': row[7],
+                    'power': row[8],
+                    'beacons': row[9],
+                    'ssid': row[13].strip() if len(row) > 13 and row[13].strip() else '<Hidden>'
+                })
+    except:
+        pass
+    return networks
 
-def parse_bssid_line(line):
-    """Extract BSSID info from a line in the BSSID section."""
-    # Format: BSSID  PWR  Beacons  #Data  #/s  CH  MB  ENC  CIPHER  AUTH  ESSID
-    parts = line.strip().split()
-    if len(parts) < 10:
-        return None
-    # Check if first part looks like a MAC address
-    if not re.match(r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})', parts[0]):
-        return None
-    bssid = parts[0]
-    power = parts[1] if len(parts) > 1 else '0'
-    # Channel is at index 5 (0-based)
-    channel = parts[5] if len(parts) > 5 else '0'
-    # Encryption at index 7
-    encryption = parts[7] if len(parts) > 7 else 'OPN'
-    # Cipher at index 8
-    cipher = parts[8] if len(parts) > 8 else ''
-    # Authentication at index 9
-    auth = parts[9] if len(parts) > 9 else ''
-    # ESSID is the rest after index 10
-    ssid = ' '.join(parts[10:]) if len(parts) > 10 else '<Hidden>'
-    if ssid == '' or ssid == '<length: 0>':
-        ssid = '<Hidden>'
-    return {
-        'bssid': bssid,
-        'power': power,
-        'channel': channel,
-        'encryption': encryption,
-        'cipher': cipher,
-        'authentication': auth,
-        'ssid': ssid
-    }
+def parse_stations(csv_file):
+    clients = defaultdict(int)
+    try:
+        with open(csv_file, 'r') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 8:
+                    continue
+                if row[0] == 'Station MAC':
+                    continue
+                bssid = row[5].strip()
+                if bssid:
+                    clients[bssid] += 1
+    except:
+        pass
+    return clients
 
+# Display
 def draw_table(networks, clients):
-    """Draw a clean table with ESSID first, then BSSID, CH, PWR, ENC, CLIENTS."""
     if not networks:
         sys.stdout.write(Colors.clear)
         sys.stdout.flush()
         print(f"{Colors.cyan}{'='*120}")
-        print(f"  YEVIL - Custom WiFi Scanner".center(120))
+        print(f"  YEVIL - WiFi Scanner".center(120))
         print(f"  Scanning for networks...".center(120))
         print(f"{'='*120}{Colors.reset}")
         return
@@ -200,18 +201,17 @@ def draw_table(networks, clients):
     sys.stdout.flush()
 
     print(f"{Colors.cyan}{'='*120}")
-    print(f"  YEVIL - Custom WiFi Scanner".center(120))
+    print(f"  YEVIL - WiFi Scanner".center(120))
     print(f"  Networks found: {len(networks)}".center(120))
     print(f"{'='*120}{Colors.reset}")
 
-    # Header: ESSID first, then BSSID, CH, PWR, ENC, CLIENTS
     header = f"{Colors.bold}{Colors.yellow}"
     header += f"{'#':<4} {'ESSID':<30} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CLIENTS':<6}"
     header += f"{Colors.reset}"
     print(header)
     print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
 
-    # Sort by signal strength (strongest first)
+    # Sort by power (strongest first)
     try:
         networks_sorted = sorted(networks,
                                  key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
@@ -232,116 +232,79 @@ def draw_table(networks, clients):
         client_count = clients.get(net['bssid'], 0)
 
         row = f"{idx:<4} {ssid:<30} {net['bssid']:<18} {net['channel']:<4} "
-        row += f"{net['power']:<6} {net['encryption']:<8} {client_count:<6}"
+        row += f"{net['power']:<6} {net['privacy']:<8} {client_count:<6}"
         Colors.print_colored(row, color)
 
     print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-    print(f"{Colors.white}Press Ctrl+C to stop scanning (new networks appear below){Colors.reset}")
+    print(f"{Colors.white}Press Ctrl+C to stop scanning{Colors.reset}")
     print(f"{Colors.cyan}{'='*120}{Colors.reset}")
 
-# ============================================
-# SCANNER WITH PARSING
-# ============================================
-
+# Scanner
 def start_scanner(adapter):
     global SCANNER_PROCESS, STOP_SCANNING
 
-    cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg']
+    # Clean old CSVs
+    for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except:
+                pass
+
+    cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg',
+           '--output-format', 'csv',
+           '--write', CSV_PREFIX,
+           '--write-interval', '1']
     print(f"\n[+] Running: {' '.join(cmd)}")
     print("[+] Scanning... Press Ctrl+C to stop.")
     time.sleep(1)
 
     try:
         SCANNER_PROCESS = subprocess.Popen(cmd,
-                                           stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE,
-                                           text=True,
-                                           bufsize=1)
+                                           stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL)
     except Exception as e:
         print(f"[-] Failed to start scanner: {e}")
         return
 
-    networks = []
-    clients = defaultdict(int)
-    seen_bssids = set()
-    in_bssid = False
-    in_station = False
+    # Wait for first CSV
+    time.sleep(2)
 
-    # We'll collect lines and parse
-    lines_buffer = []
+    last_networks = []
+    last_clients = {}
 
     while not STOP_SCANNING:
-        line = SCANNER_PROCESS.stdout.readline()
-        if not line:
-            break
-        lines_buffer.append(line)
-        if len(lines_buffer) > 200:
-            lines_buffer = lines_buffer[-200:]
-
-        # Detect sections
-        if 'BSSID' in line and 'PWR' in line and 'Beacons' in line:
-            in_bssid = True
-            in_station = False
-            continue
-        if 'Station' in line and 'PWR' in line and 'Lost' in line:
-            in_bssid = False
-            in_station = True
+        time.sleep(0.5)
+        csv_file = f'{CSV_PREFIX}-01.csv'
+        if not os.path.exists(csv_file):
             continue
 
-        # Parse BSSID lines
-        if in_bssid and line.strip():
-            net = parse_bssid_line(line)
-            if net and net['bssid'] not in seen_bssids:
-                seen_bssids.add(net['bssid'])
-                networks.append(net)
-                # Redraw table immediately when new network appears
-                # We'll also need to update clients later
-                # For now, we'll redraw after parsing stations as well
+        networks = parse_networks(csv_file)
+        clients = parse_stations(csv_file)
 
-        # Parse station lines to count clients
-        if in_station and line.strip():
-            # Format: BSSID  STATION  PWR  Rate  Lost  Frames  Notes
-            parts = line.split()
-            if len(parts) >= 2:
-                # First is BSSID, second is Station MAC
-                if re.match(r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})', parts[0]):
-                    bssid = parts[0]
-                    clients[bssid] += 1
+        # Check if networks list changed
+        net_bssids = set(net['bssid'] for net in networks)
+        last_bssids = set(net['bssid'] for net in last_networks)
 
-        # Periodically redraw table (but only if we have networks and something changed)
-        # We'll redraw after each BSSID addition or when we have station updates
-        # We'll just redraw after each new BSSID appears, and we'll include client counts from stations
+        if net_bssids != last_bssids or clients != last_clients:
+            draw_table(networks, clients)
+            last_networks = networks
+            last_clients = clients
 
-        # Since we don't have a good event for "new BSSID", we'll simply check every 0.5s
-        # and redraw if the network list changed or clients changed.
-        # Simpler: redraw every time we have networks, but that will flicker.
-        # Better: redraw only when new BSSID added.
-
-        # We'll use a timer to redraw once per second if any networks exist.
-        # But we already redraw on new BSSID. Let's also redraw periodically to show client updates.
-        # We'll redraw every 2 seconds if there are networks.
-
-    # Cleanup process
+    # Cleanup
     if SCANNER_PROCESS:
         SCANNER_PROCESS.terminate()
-        time.sleep(0.5)
+        time.sleep(1)
         if SCANNER_PROCESS.poll() is None:
             SCANNER_PROCESS.kill()
         SCANNER_PROCESS = None
 
-    # Final draw
-    if networks:
-        draw_table(networks, clients)
-
-# ============================================
-# MAIN
-# ============================================
-
+# Main
 def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     print(BANNER)
-    Colors.print_colored("[+] Yevil - Custom WiFi Scanner", 'cyan', True)
+    Colors.print_colored("[+] Yevil - WiFi Scanner", 'cyan', True)
     Colors.print_colored("[+] For Educational Purposes Only!", 'yellow')
     print("="*50)
 
