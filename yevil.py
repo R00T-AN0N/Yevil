@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-Yevil - Static WiFi Scanner (one table, new networks add rows)
+Yevil - WiFi Security Testing Tool
+Ultimate Simple Version - Direct Command Execution
 """
 
 import os
 import sys
 import subprocess
+import re
 import time
 import signal
-import csv
-from collections import defaultdict
 
-# Colours
+# ============================================
+# COLORS
+# ============================================
+
 class Colors:
     red = '\033[91m'
     green = '\033[92m'
@@ -21,16 +24,18 @@ class Colors:
     white = '\033[97m'
     reset = '\033[0m'
     bold = '\033[1m'
-    clear = '\033[2J\033[H'
-
+    
     @staticmethod
-    def print_colored(text, color='white', bold=False):
+    def print_colored(text: str, color: str = 'white', bold: bool = False):
         style = Colors.bold if bold else ''
         print(f"{style}{getattr(Colors, color, '')}{text}{Colors.reset}")
 
-# Banner
-BANNER = f"""
-{Colors.cyan}
+# ============================================
+# BANNER
+# ============================================
+
+BANNER = """
+\033[96m
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
 ║    ██╗   ██╗███████╗██╗   ██╗██╗██╗                          ║
@@ -44,64 +49,51 @@ BANNER = f"""
 ║           ⚠️  For Educational Purposes Only!                  ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
-{Colors.reset}
+\033[0m
 """
 
-# Globals
+# ============================================
+# GLOBAL VARIABLES
+# ============================================
+
 MONITOR_INTERFACE = None
-SCANNER_PROCESS = None
-STOP_SCANNING = False
-CSV_PREFIX = '/tmp/yevil_scan'
 
-# Cleanup
+# ============================================
+# CLEANUP
+# ============================================
+
 def cleanup():
-    global MONITOR_INTERFACE, SCANNER_PROCESS
+    global MONITOR_INTERFACE
     print("\n[+] Cleaning up...")
-    if SCANNER_PROCESS:
-        try:
-            SCANNER_PROCESS.terminate()
-            time.sleep(0.5)
-            if SCANNER_PROCESS.poll() is None:
-                SCANNER_PROCESS.kill()
-        except:
-            pass
-        SCANNER_PROCESS = None
-
-    for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
-        if os.path.exists(f):
-            try:
-                os.remove(f)
-            except:
-                pass
-
     if MONITOR_INTERFACE:
         try:
-            subprocess.run(['sudo', 'ip', 'link', 'set', MONITOR_INTERFACE, 'down'],
-                           capture_output=True, check=False)
-            subprocess.run(['sudo', 'iw', 'dev', MONITOR_INTERFACE, 'set', 'type', 'managed'],
-                           capture_output=True, check=False)
-            subprocess.run(['sudo', 'ip', 'link', 'set', MONITOR_INTERFACE, 'up'],
-                           capture_output=True, check=False)
+            subprocess.run(['sudo', 'ip', 'link', 'set', MONITOR_INTERFACE, 'down'], 
+                         capture_output=True, check=False)
+            subprocess.run(['sudo', 'iw', 'dev', MONITOR_INTERFACE, 'set', 'type', 'managed'], 
+                         capture_output=True, check=False)
+            subprocess.run(['sudo', 'ip', 'link', 'set', MONITOR_INTERFACE, 'up'], 
+                         capture_output=True, check=False)
             print(f"[+] {MONITOR_INTERFACE} reset to managed mode")
         except:
             pass
         try:
-            subprocess.run(['sudo', 'systemctl', 'restart', 'NetworkManager'],
-                           capture_output=True, check=False)
+            subprocess.run(['sudo', 'systemctl', 'restart', 'NetworkManager'], 
+                         capture_output=True, check=False)
             print("[+] NetworkManager restarted")
         except:
             pass
     print("[+] Cleanup complete!")
 
 def signal_handler(sig, frame):
-    global STOP_SCANNING
     print("\n[!] Ctrl+C detected")
-    STOP_SCANNING = True
     cleanup()
     print("\n[+] Goodbye!")
     sys.exit(0)
 
-# Adapter functions
+# ============================================
+# ADAPTER FUNCTIONS
+# ============================================
+
 def detect_adapters():
     print("\n[+] Detecting wireless adapters...")
     adapters = []
@@ -120,16 +112,22 @@ def set_monitor_mode(adapter):
     global MONITOR_INTERFACE
     print(f"\n[+] Setting {adapter} to monitor mode...")
     try:
-        subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'],
-                       capture_output=True, text=True)
+        # Kill interfering processes
+        subprocess.run(['sudo', 'airmon-ng', 'check', 'kill'], 
+                     capture_output=True, text=True)
         time.sleep(1)
-        subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'down'],
-                       check=True, capture_output=True)
-        subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'type', 'monitor'],
-                       check=True, capture_output=True)
-        subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'up'],
-                       check=True, capture_output=True)
+        
+        # Set monitor mode
+        subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'down'], 
+                     check=True, capture_output=True)
+        subprocess.run(['sudo', 'iw', 'dev', adapter, 'set', 'type', 'monitor'], 
+                     check=True, capture_output=True)
+        subprocess.run(['sudo', 'ip', 'link', 'set', adapter, 'up'], 
+                     check=True, capture_output=True)
+        
         MONITOR_INTERFACE = adapter
+        
+        # Verify
         result = subprocess.run(['iwconfig', adapter], capture_output=True, text=True)
         if 'Mode:Monitor' in result.stdout:
             print(f"[+] ✅ {adapter} is now in MONITOR MODE!")
@@ -141,185 +139,58 @@ def set_monitor_mode(adapter):
         print(f"[-] Failed: {e}")
         return False
 
-# CSV PARSERS – correctly read the airodump-ng CSV format
-def parse_networks(csv_file):
-    """Extract BSSID rows from the CSV."""
-    networks = []
-    try:
-        with open(csv_file, 'r') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) < 14:
-                    continue
-                # Skip header
-                if row[0] == 'BSSID':
-                    continue
-                bssid = row[0].strip()
-                if not bssid:
-                    continue
-                networks.append({
-                    'bssid': bssid,
-                    'channel': row[3],
-                    'privacy': row[5],
-                    'cipher': row[6],
-                    'authentication': row[7],
-                    'power': row[8],
-                    'beacons': row[9],
-                    'ssid': row[13].strip() if len(row) > 13 and row[13].strip() else '<Hidden>'
-                })
-    except Exception as e:
-        # silently ignore
-        pass
-    return networks
+# ============================================
+# MAIN SCANNER - DIRECT EXECUTION
+# ============================================
 
-def parse_stations(csv_file):
-    """Extract station rows to count clients per BSSID."""
-    clients = defaultdict(int)
-    try:
-        with open(csv_file, 'r') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) < 8:
-                    continue
-                if row[0] == 'Station MAC':
-                    continue
-                bssid = row[5].strip()
-                if bssid:
-                    clients[bssid] += 1
-    except:
-        pass
-    return clients
-
-# DISPLAY – draw a clean table once, then re-draw only when new networks appear
-def draw_table(networks, clients):
-    """Draw a single static table with all columns aligned."""
-    sys.stdout.write(Colors.clear)
-    sys.stdout.flush()
-
-    print(f"{Colors.cyan}{'='*120}")
-    print(f"  YEVIL - Static WiFi Scanner".center(120))
-    print(f"  Networks found: {len(networks)}".center(120))
-    print(f"{'='*120}{Colors.reset}")
-
-    header = f"{Colors.bold}{Colors.yellow}"
-    header += f"{'#':<4} {'ESSID':<30} {'BSSID':<18} {'CH':<4} {'PWR':<6} {'ENC':<8} {'CIPHER':<8} {'AUTH':<10} {'CLIENTS':<6}"
-    header += f"{Colors.reset}"
-    print(header)
-    print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-
-    # Sort by signal strength (strongest first)
-    try:
-        networks_sorted = sorted(networks,
-                                 key=lambda x: int(x['power']) if x['power'].lstrip('-').isdigit() else -100,
-                                 reverse=True)
-    except:
-        networks_sorted = networks
-
-    for idx, net in enumerate(networks_sorted, 1):
-        try:
-            pwr = int(net['power'])
-            color = 'green' if pwr > -50 else 'yellow' if pwr > -65 else 'red'
-        except:
-            color = 'white'
-
-        ssid = net['ssid'][:30] if len(net['ssid']) > 30 else net['ssid']
-        if ssid == '':
-            ssid = '<Hidden>'
-        client_count = clients.get(net['bssid'], 0)
-
-        row = f"{idx:<4} {ssid:<30} {net['bssid']:<18} {net['channel']:<4} "
-        row += f"{net['power']:<6} {net['privacy']:<8} {net['cipher']:<8} {net['authentication']:<10} {client_count:<6}"
-        Colors.print_colored(row, color)
-
-    print(f"{Colors.cyan}{'-'*120}{Colors.reset}")
-    print(f"{Colors.white}Press Ctrl+C to stop scanning (new networks will appear when found){Colors.reset}")
-    print(f"{Colors.cyan}{'='*120}{Colors.reset}")
-
-# SCANNER – poll CSV, add new BSSIDs only
-def start_scanner(adapter):
-    global SCANNER_PROCESS, STOP_SCANNING
-
-    # Clean old CSVs
-    for f in [f'{CSV_PREFIX}-01.csv', f'{CSV_PREFIX}-01.kismet.csv']:
-        if os.path.exists(f):
-            try:
-                os.remove(f)
-            except:
-                pass
-
-    cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg',
-           '--output-format', 'csv',
-           '--write', CSV_PREFIX,
-           '--write-interval', '1']
+def run_scan(adapter):
+    """Run airodump-ng directly - this will show output in real-time"""
+    cmd = ['sudo', 'airodump-ng', adapter, '--band', 'abg']
     print(f"\n[+] Running: {' '.join(cmd)}")
-    print("[+] Scanning... Press Ctrl+C to stop.")
-    time.sleep(1)
-
+    print("[+] Press Ctrl+C to stop\n")
+    print("="*120)
+    
+    # Execute the command - stdout will go directly to terminal
+    # This is the same as running it manually
     try:
-        SCANNER_PROCESS = subprocess.Popen(cmd,
-                                           stdout=subprocess.DEVNULL,
-                                           stderr=subprocess.DEVNULL)
+        subprocess.run(cmd, stdout=None, stderr=None, check=False)
+    except KeyboardInterrupt:
+        # Will be caught by main handler
+        raise
     except Exception as e:
-        print(f"[-] Failed to start scanner: {e}")
-        return
+        print(f"[-] Error: {e}")
 
-    # Wait for first CSV
-    time.sleep(2)
-
-    seen_bssids = set()
-    all_networks = []
-    all_clients = defaultdict(int)
-
-    while not STOP_SCANNING:
-        time.sleep(0.5)
-        csv_file = f'{CSV_PREFIX}-01.csv'
-        if not os.path.exists(csv_file):
-            continue
-
-        networks = parse_networks(csv_file)
-        clients = parse_stations(csv_file)
-
-        # Find new BSSIDs
-        new_bssids = set(net['bssid'] for net in networks) - seen_bssids
-        if new_bssids:
-            seen_bssids.update(new_bssids)
-            # Replace all networks with the latest full list
-            all_networks = networks
-            all_clients = clients
-            # Redraw the whole table once
-            draw_table(all_networks, all_clients)
-
-    # Cleanup process
-    if SCANNER_PROCESS:
-        SCANNER_PROCESS.terminate()
-        time.sleep(1)
-        if SCANNER_PROCESS.poll() is None:
-            SCANNER_PROCESS.kill()
-        SCANNER_PROCESS = None
-
+# ============================================
 # MAIN
+# ============================================
+
 def main():
     signal.signal(signal.SIGINT, signal_handler)
-
+    
     print(BANNER)
+    
     Colors.print_colored("[+] Yevil - WiFi Security Testing Tool", 'cyan', True)
     Colors.print_colored("[+] For Educational Purposes Only!", 'yellow')
     print("="*50)
-
+    
+    # Check root
     if os.geteuid() != 0:
         Colors.print_colored("[!] This tool requires root privileges!", 'red')
         Colors.print_colored("[!] Please run with: sudo python3 yevil.py", 'yellow')
         sys.exit(1)
-
+    
+    # Detect adapters
     adapters = detect_adapters()
     if not adapters:
         Colors.print_colored("\n[!] No wireless adapters detected!", 'red')
         sys.exit(1)
-
+    
+    # Show adapters
     Colors.print_colored("\n📋 Detected Adapters:", 'cyan', True)
     for i, adapter in enumerate(adapters, 1):
         print(f"   {i}. {adapter}")
-
+    
+    # Select
     print()
     while True:
         try:
@@ -331,10 +202,10 @@ def main():
         except:
             pass
         Colors.print_colored("[-] Invalid selection!", 'red')
-
+    
     Colors.print_colored(f"\n[+] Selected: {selected}", 'green')
-
-    # Check monitor mode
+    
+    # Check if already in monitor mode
     result = subprocess.run(['iwconfig', selected], capture_output=True, text=True)
     if 'Mode:Monitor' in result.stdout:
         Colors.print_colored("[+] Already in monitor mode", 'green')
@@ -351,17 +222,19 @@ def main():
         else:
             Colors.print_colored("[+] Exiting...", 'yellow')
             sys.exit(0)
-
-    start_scanner(monitor_adapter)
-
+    
+    # Run the scan
+    run_scan(monitor_adapter)
+    
+    # After scan finishes (or user Ctrl+C), ask for cleanup
     print("\n" + "="*50)
     cleanup_choice = input("\n[?] Cleanup monitor mode? (y/n): ")
     if cleanup_choice.lower() == 'y':
         cleanup()
     else:
         Colors.print_colored("[+] Adapter remains in monitor mode", 'yellow')
-        Colors.print_colored(f"[+] Manual cleanup: sudo ip link set {monitor_adapter} down && sudo iw dev {monitor_adapter} set type managed && sudo ip link set {monitor_adapter} up", 'yellow')
-
+        Colors.print_colored(f"[+] To cleanup manually: sudo ip link set {monitor_adapter} down && sudo iw dev {monitor_adapter} set type managed && sudo ip link set {monitor_adapter} up", 'yellow')
+    
     Colors.print_colored("\n[+] Done!", 'green', True)
 
 if __name__ == "__main__":
